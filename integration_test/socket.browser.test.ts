@@ -1,5 +1,6 @@
 import { expect, test } from "vitest"
 import type { CloseDetails } from "../assets/js/phoenix_durable_channel/actors"
+import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
 import { LongPoll } from "../assets/js/phoenix_durable_channel/longpoll"
 import { Serializer } from "../assets/js/phoenix_durable_channel/serializer"
 import { Socket } from "../assets/js/phoenix_durable_channel/socket"
@@ -191,6 +192,29 @@ test("a short drop does not count as offline", async () => {
   expect(socket.status.online).toBe(true)
 })
 
+test("a channel joined for a new connection from a socket callback is not errored by the old one", async () => {
+  for (const replace of [false, true]) {
+    const socket = openSocket("/socket")
+    socket.connect()
+    await join(socket.channel(topic("old")))
+    const fresh: Array<Channel> = []
+    const errors: Array<unknown> = []
+    const ref = socket.onMessage(() => {
+      socket.off([ref])
+      if (replace) socket.replaceTransport(WebSocket)
+      else socket.disconnect()
+      socket.connect()
+      const channel = socket.channel(topic("fresh"))
+      channel.onError((reason) => errors.push(reason))
+      channel.join()
+      fresh.push(channel)
+    })
+    socket.ping(() => {})
+    await waitFor(() => fresh[0]?.state === "joined")
+    expect(errors).toEqual([])
+  }
+})
+
 test("builds its URL from the endpoint, params and vsn", () => {
   const relative = new Socket("/socket", {
     params: { token: "t", user: { id: 1 } },
@@ -242,6 +266,31 @@ test("uses the encode and decode it is given", async () => {
   const channel = socket.channel(topic("codec"))
   await join(channel)
   expect(encoded).toEqual(["phx_join"])
+})
+
+test("uses JSON over LongPoll whatever encode and decode it is given, as phoenix.js does", async () => {
+  const custom = {
+    encode: (_message: unknown, callback: (encoded: string) => void) => callback("custom"),
+    decode: (_raw: unknown, callback: (message: never) => void) => callback("custom" as never),
+  }
+  const socket = openSocket("/socket", { transport: LongPoll, ...custom })
+  const message = { join_ref: "1", ref: "2", topic: "t", event: "e", payload: { a: 1 } }
+  socket.encode(message, (encoded) => expect(encoded).toBe('["1","2","t","e",{"a":1}]'))
+  socket.decode('["1","2","t","e",{"a":1}]', (decoded) => expect(decoded).toEqual(message))
+  socket.connect()
+  await join(socket.channel(topic("codec")))
+
+  const logger = () => {}
+  const websocket = openSocket("/socket", {
+    ...custom,
+    heartbeatIntervalMs: 60_000,
+    logger,
+    params: { one: "two" },
+  })
+  websocket.encode(message, (encoded) => expect(encoded).toBe("custom"))
+  expect(websocket.heartbeatIntervalMs).toBe(60_000)
+  expect(websocket.logger).toBe(logger)
+  expect(websocket.params()).toEqual({ one: "two" })
 })
 
 test("sends authToken in Sec-WebSocket-Protocol, and over LongPoll in a header", async () => {

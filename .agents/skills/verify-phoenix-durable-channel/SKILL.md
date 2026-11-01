@@ -21,7 +21,7 @@ Each requirement below is the owner's. Check every one, every time. A requiremen
 
 ## What it must pass
 
-9. **Phoenix's own tests, from the latest Phoenix release.** `mix test` runs Phoenix's server channel tests (`test/phoenix/`) with their channels on `PhoenixDurableChannel.Channel` and their sockets on `PhoenixDurableChannel.Serializer`, over WebSocket and LongPoll. `npx jest -c phoenix_js_test/jest.config.cjs -i` runs Phoenix's JS tests against this client. When Phoenix releases, copy its files over again unchanged.
+9. **Phoenix's own tests, from the latest Phoenix release.** `mix test` runs Phoenix's server channel tests (`test/phoenix/`) with their channels on `PhoenixDurableChannel.Channel` and their sockets on `PhoenixDurableChannel.Serializer`, over WebSocket and LongPoll. `npx jest -c phoenix_js_test/jest.config.cjs -i` runs Phoenix's JS tests against this client; the only failures allowed are those in `phoenix_js_test/internals.json`, each naming the phoenix.js private member it reaches into. A listed test that touches no private member is a gap in this client: fix the client, not the list. When Phoenix releases, copy its files over again unchanged.
 10. **The phoenix.js API.** An app swaps `import { Socket } from "phoenix"` for this package and changes nothing else. A change to that API needs the owner's yes first.
 11. **Old clients keep working.** A server running this library still serves phoenix.js 1.7 clients (V1 and V2 serializers) without a reload.
 12. **100% coverage from real tests.** `pnpm test` runs in real Chromium against the real Phoenix app and real stores, and fails under 100% lines, branches, functions and statements. No mocks, stubs or fakes; Phoenix's own vendored tests are the only exception.

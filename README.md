@@ -300,7 +300,7 @@ npx jest -c phoenix_js_test/jest.config.cjs -i
 
 `mix test` runs Phoenix 1.8.16's channel tests (`test/phoenix/integration`, `test/phoenix/test/channel_test.exs`) and its V2 serializer test, as Phoenix ships them, with three changes: each test channel adds `use PhoenixDurableChannel.Channel`, each test endpoint's socket uses `PhoenixDurableChannel.Serializer` for vsn 2.0.0, and the log assertion names that serializer. When Phoenix releases, copy its files over and make the same three changes; `diff` against Phoenix's tag shows exactly them.
 
-`phoenix_js_test/` runs Phoenix 1.8.16's `assets/test` against this client, through `phoenix_js_test/js/phoenix`, which re-exports it.
+`phoenix_js_test/` runs Phoenix 1.8.16's `assets/test` against this client, through `phoenix_js_test/js/phoenix`, which re-exports it. Most of those tests reach into phoenix.js's private members (`socket.conn`, `channel.joinPush`, `trigger()`, its timers and transport handlers), which this client does not have. `phoenix_js_test/internals.json` lists each such test with what it reaches into. The run fails if any other test fails, or if a listed test starts passing. `PHOENIX_JS_TEST_RECORD=1` rewrites the list, keeping the reasons already written; a new entry needs its reason written by hand.
 
 The tests in `integration_test/` run the client in Chromium against `integration_test/phoenix_app`, a Phoenix 1.8.16 app on this library, with MongoDB, S2 Lite and the `durable-streams-cloudflare` worker on wrangler. `integration_test/support/phoenix-server.ts` starts them all; it needs Elixir and the `s2` CLI from mise. Coverage of `assets/js` must stay at 100%.
 

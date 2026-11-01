@@ -57,6 +57,9 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      - name: Phoenix's own JS tests
+        run: npx jest -c phoenix_js_test/jest.config.cjs -i
+
       - name: The Durable Streams worker's log
         if: failure()
         run: tail -n 300 integration_test/durable_streams/wrangler.log

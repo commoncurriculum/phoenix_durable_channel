@@ -69,13 +69,14 @@ export class Socket {
   readonly reconnectAfterMs: (tries: number) => number
   readonly rejoinAfterMs: (tries: number) => number
   readonly binaryType: BinaryType
-  private params: () => Params
+  readonly heartbeatIntervalMs: number
+  readonly logger: SocketOptions["logger"]
+  readonly encode: NonNullable<SocketOptions["encode"]>
+  readonly decode: NonNullable<SocketOptions["decode"]>
+  params: () => Params
   private readonly authToken: (() => string) | null
   private ref = 0
-  private readonly logger: SocketOptions["logger"]
   private webSocket: TransportConstructor
-  private readonly encode: NonNullable<SocketOptions["encode"]>
-  private readonly decode: NonNullable<SocketOptions["decode"]>
   private stateChangeCallbacks: Array<StateChangeCallback & { ref: string }> = []
   private disconnectCallbacks: Array<() => void> = []
 
@@ -85,8 +86,13 @@ export class Socket {
     this.vsn = options.vsn ?? DEFAULT_VSN
     this.longpollerTimeout = options.longpollerTimeout ?? 20_000
     this.logger = options.logger
-    this.encode = options.encode ?? ((message, callback) => Serializer.encode(message, callback))
-    this.decode = options.decode ?? ((raw, callback) => Serializer.decode(raw, callback))
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000
+    const json = options.transport === LongPoll
+    this.encode =
+      (json ? undefined : options.encode) ??
+      ((message, callback) => Serializer.encode(message, callback))
+    this.decode =
+      (json ? undefined : options.decode) ?? ((raw, callback) => Serializer.decode(raw, callback))
     const params = options.params ?? {}
     this.params = typeof params === "function" ? params : () => params
     const authToken = options.authToken
@@ -112,7 +118,7 @@ export class Socket {
         transport: kind,
         settings: {
           longPollFallbackMs: options.longPollFallbackMs ?? null,
-          heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30_000,
+          heartbeatIntervalMs: this.heartbeatIntervalMs,
           heartbeatTimeoutMs: options.heartbeatTimeoutMs ?? 10_000,
           websocketRetryAfterMs: options.websocketRetryAfterMs ?? 10 * 60_000,
           offlineAfterMs: options.offlineAfterMs ?? 25_000,
@@ -153,11 +159,13 @@ export class Socket {
 
   disconnect(callback?: () => void, code = 1000, reason = ""): void {
     if (callback) this.disconnectCallbacks.push(callback)
+    this.loseConnection()
     this.actor.send({ type: "DISCONNECT", code, reason })
   }
 
   replaceTransport(transport: TransportConstructor): void {
     this.webSocket = transport
+    this.loseConnection()
     this.actor.send({
       type: "REPLACE_TRANSPORT",
       transport: transport === LongPoll ? "longpoll" : "websocket",
@@ -262,6 +270,10 @@ export class Socket {
 
   log(kind: string, message: string, data?: unknown): void {
     this.logger?.(kind, message, data)
+  }
+
+  private loseConnection(): void {
+    if (this.isConnected()) for (const channel of this.channels) channel.socketClosed()
   }
 
   private addCallback(callback: StateChangeCallback): string {

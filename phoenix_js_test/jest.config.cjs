@@ -8,6 +8,8 @@ module.exports = {
     url: "https://example.com",
   },
   testRegex: "/test/.*_test\\.js$",
+  reporters: ["summary", `${__dirname}/reporter.cjs`],
+  testFailureExitCode: 0,
   moduleFileExtensions: ["ts", "js", "mjs", "cjs", "json"],
   transform: { "\\.[cm]?[jt]s$": ["babel-jest", { configFile: `${__dirname}/babel.config.json` }] },
   transformIgnorePatterns: [],

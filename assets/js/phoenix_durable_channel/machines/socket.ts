@@ -275,7 +275,10 @@ export const socketMachine = setup({
                     raise({ type: "CONNECTION_OPENED" }),
                   ],
                   exit: [
-                    ({ context }) => context.hooks.connectionLost(),
+                    ({ context, event }) => {
+                      if (event.type !== "DISCONNECT" && event.type !== "REPLACE_TRANSPORT")
+                        context.hooks.connectionLost()
+                    },
                     raise({ type: "CONNECTION_LOST" }),
                   ],
                   invoke: {
