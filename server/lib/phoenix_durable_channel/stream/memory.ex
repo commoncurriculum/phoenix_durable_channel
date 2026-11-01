@@ -1,0 +1,146 @@
+defmodule PhoenixDurableChannel.Stream.Memory do
+  @moduledoc """
+  A `PhoenixDurableChannel.Stream`, read through the channel, and a `PhoenixDurableChannel.Ledger`, kept in
+  this node's memory.
+
+  It costs no storage. Each node keeps its own messages, numbered on their own, so each
+  node's are an epoch of their own: a client that reconnects to another node, or to this
+  one after a restart, reads that node's from where it last read them, or from the start.
+  The ledger is this node's too, so it suits one node: on another node, or after a
+  restart, the client's durable messages are handled again.
+  It keeps the last `:kept` messages of each topic (default 1000). It forgets a topic once
+  no channel process of the topic has been alive and no message appended for
+  `:forget_after` milliseconds (default one hour).
+
+      children = [{PhoenixDurableChannel.Stream.Memory, kept: 1000, forget_after: :timer.hours(1)}]
+  """
+  @behaviour PhoenixDurableChannel.Ledger
+  @behaviour PhoenixDurableChannel.Stream
+  @behaviour PhoenixDurableChannel.Stream.ThroughChannel
+  use GenServer
+
+  # The client never has more than 32 durable messages unanswered.
+  @replies_kept 64
+
+  def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
+
+  @impl GenServer
+  def init(options) do
+    :ets.new(__MODULE__, [:named_table, :public, read_concurrency: true])
+    forget_after = Keyword.get(options, :forget_after, :timer.hours(1))
+    :timer.send_interval(div(forget_after, 4) + 1, :forget)
+
+    {:ok, %{kept: Keyword.get(options, :kept, 1000), forget_after: forget_after, channels: %{}}}
+  end
+
+  @impl GenServer
+  def handle_call({:append, topic, event, payload}, _from, state) do
+    kept = kept(topic)
+    number = kept.latest + 1
+
+    messages =
+      Enum.take([%{number: number, event: event, payload: payload} | kept.messages], state.kept)
+
+    put(topic, %{kept | latest: number, messages: messages})
+    {:reply, number, state}
+  end
+
+  def handle_call({:put_received, topic, number, reply}, _from, state) do
+    kept = kept(topic)
+
+    replies =
+      kept.replies |> Map.put(number, reply) |> Map.delete(number - @replies_kept)
+
+    put(topic, %{kept | received: max(kept.received, number), replies: replies})
+    {:reply, :ok, state}
+  end
+
+  # Called from a channel process as it joins: the topic is not forgotten while it lives.
+  def handle_call({:watch, topic, channel}, _from, state) do
+    if not Map.has_key?(state.channels, channel), do: Process.monitor(channel)
+    put(topic, kept(topic))
+    {:reply, :ok, put_in(state, [:channels, channel], topic)}
+  end
+
+  @impl GenServer
+  def handle_info({:DOWN, _ref, :process, channel, _reason}, state) do
+    {topic, channels} = Map.pop(state.channels, channel)
+    put(topic, kept(topic))
+    {:noreply, %{state | channels: channels}}
+  end
+
+  def handle_info(:forget, state) do
+    oldest = System.monotonic_time(:millisecond) - state.forget_after
+    watched = MapSet.new(Map.values(state.channels))
+
+    __MODULE__
+    |> :ets.select([{{:"$1", %{touched_at: :"$2"}}, [{:<, :"$2", oldest}], [:"$1"]}])
+    |> Enum.reject(&MapSet.member?(watched, &1))
+    |> Enum.each(&:ets.delete(__MODULE__, &1))
+
+    {:noreply, state}
+  end
+
+  @doc """
+  What is kept for `topic`: its epoch, the last number, and the messages newest first. A
+  topic with nothing kept gets a new epoch.
+  """
+  def kept(topic) do
+    case :ets.lookup(__MODULE__, topic) do
+      [{^topic, kept}] ->
+        kept
+
+      [] ->
+        %{
+          epoch: Base.url_encode64(:crypto.strong_rand_bytes(9)),
+          latest: 0,
+          messages: [],
+          received: 0,
+          replies: %{}
+        }
+    end
+  end
+
+  @impl PhoenixDurableChannel.Ledger
+  def received(socket), do: kept(socket.topic).received
+
+  @impl PhoenixDurableChannel.Ledger
+  def put_received(socket, number, reply),
+    do: GenServer.call(__MODULE__, {:put_received, socket.topic, number, reply})
+
+  @impl PhoenixDurableChannel.Ledger
+  def reply(socket, number), do: Map.get(kept(socket.topic).replies, number)
+
+  @doc "Keeps `kept` for `topic`, and notes the time, from which it is forgotten."
+  def put(topic, kept),
+    do:
+      :ets.insert(
+        __MODULE__,
+        {topic, Map.put(kept, :touched_at, System.monotonic_time(:millisecond))}
+      )
+
+  @impl PhoenixDurableChannel.Stream
+  def append(socket, event, payload),
+    do: GenServer.call(__MODULE__, {:append, socket.topic, event, payload})
+
+  @impl PhoenixDurableChannel.Stream.ThroughChannel
+  def since(socket, number, limit) do
+    kept = kept(socket.topic)
+    sent = min(kept.latest, number + limit)
+
+    messages =
+      kept.messages
+      |> Enum.filter(fn message -> message.number > number and message.number <= sent end)
+      |> Enum.reverse()
+      |> Enum.map(fn message -> {message.number, message.event, message.payload} end)
+
+    %{messages: messages, sent: sent, latest: kept.latest, epoch: kept.epoch}
+  end
+
+  @impl PhoenixDurableChannel.Stream
+  def reader(socket) do
+    :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})
+    kept = kept(socket.topic)
+    %{type: "phoenix", last: kept.latest, epoch: kept.epoch}
+  end
+end

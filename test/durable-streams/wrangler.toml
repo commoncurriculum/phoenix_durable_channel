@@ -1,0 +1,28 @@
+# The Durable Streams worker the library's tests read from, run with `wrangler dev --local`.
+name = "phoenix-durable-channel-durable-streams"
+main = "worker.ts"
+compatibility_date = "2026-02-02"
+
+[durable_objects]
+bindings = [
+  { name = "STREAMS", class_name = "StreamDO" },
+  { name = "SUBSCRIPTION_DO", class_name = "StreamSubscribersDO" },
+  { name = "ESTUARY_DO", class_name = "EstuaryDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StreamDO", "StreamSubscribersDO", "EstuaryDO"]
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "durable-streams"
+
+[[kv_namespaces]]
+binding = "REGISTRY"
+id = "registry"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.sql"]
+fallthrough = true

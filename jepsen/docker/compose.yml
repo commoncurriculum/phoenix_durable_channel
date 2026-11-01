@@ -1,0 +1,54 @@
+# The cluster the Jepsen test runs against: three nodes running server/, and the stores they
+# share: MongoDB, S2 Lite, and the Durable Streams worker (Durable Objects) on wrangler.
+# Jepsen reaches the nodes with `docker exec` and cuts them off with iptables.
+name: phoenix-durable-channel-jepsen
+
+x-node: &node
+  build: { context: ., dockerfile: node.Dockerfile }
+  cap_add: [NET_ADMIN]
+  init: true
+  volumes:
+    - ${REPOSITORY:?this repository's checkout}:${REPOSITORY}
+    - ${MISE_INSTALLS:?mise's installs directory}:${MISE_INSTALLS}:ro
+  environment:
+    REPOSITORY: ${REPOSITORY}
+    MISE_INSTALLS: ${MISE_INSTALLS}
+
+services:
+  n1: { <<: *node, hostname: n1 }
+  n2: { <<: *node, hostname: n2 }
+  n3: { <<: *node, hostname: n3 }
+
+  mongo:
+    image: mirror.gcr.io/library/mongo:7.0
+
+  # The browsers read S2 and the worker from the host, and the nodes through
+  # docker/forward-databases.sh, all at the same 127.0.0.1 ports the server gives the clients.
+  s2:
+    image: mirror.gcr.io/library/ubuntu:24.04
+    ports: ["127.0.0.1:4251:4243"]
+    volumes:
+      - ${MISE_INSTALLS}:${MISE_INSTALLS}:ro
+    command: ["${MISE_INSTALLS}/github-s2-streamstore-s2/0.43.2/s2", "lite", "--port", "4243"]
+
+  # The node image, for its CA certificates, which workerd needs to start.
+  durable-streams:
+    build: { context: ., dockerfile: node.Dockerfile }
+    init: true
+    ports: ["127.0.0.1:4252:4252"]
+    volumes:
+      - ${REPOSITORY}:${REPOSITORY}
+      - ${MISE_INSTALLS}:${MISE_INSTALLS}:ro
+    environment:
+      IP: 0.0.0.0
+      PATH: ${MISE_INSTALLS}/node/22.22.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      WRANGLER_SEND_METRICS: "false"
+    command:
+      - ${REPOSITORY}/test/durable-streams/serve.sh
+      - "4252"
+      - phoenix-durable-channel-jepsen
+      - phoenix-durable-channel-jepsen-signing-secret
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/4252"]
+      interval: 1s
+      retries: 120

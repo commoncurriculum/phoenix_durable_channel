@@ -1,0 +1,7 @@
+[tools]
+node = "22.22.2"
+pnpm = "11.1.1"
+erlang = "25.3.2.21"
+elixir = "1.17.3-otp-25"
+java = "temurin-21"
+"github:s2-streamstore/s2" = { version = "0.43.2", version_prefix = "s2-cli-v" }

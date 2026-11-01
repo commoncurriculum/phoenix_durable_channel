@@ -1,0 +1,40 @@
+{
+  "name": "phoenix_durable_channel",
+  "version": "0.1.0",
+  "description": "A drop-in replacement for the phoenix.js client, with durable messages: numbered, kept on the server, delivered once and in order.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/commoncurriculum/phoenix_durable_channel.git"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "packageManager": "pnpm@11.1.1",
+  "scripts": {
+    "test": "vitest run --coverage",
+    "lint": "tsc --noEmit",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "@supergrain/activity": "^1.0.4",
+    "@supergrain/kernel": "^7.3.1",
+    "effect": "^3.21.4",
+    "xstate": "^5.33.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@durable-streams-cloudflare/server": "git+https://github.com/commoncurriculum/durable-streams-cloudflare.git#9e9481380662491c16ec4656d093ed0559f49fd1&path:packages/server",
+    "@types/node": "^22.20.5",
+    "@vitest/browser-playwright": "4.1.9",
+    "@vitest/coverage-v8": "4.1.9",
+    "playwright": "1.63.0",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.9",
+    "wrangler": "^4.156.0"
+  }
+}

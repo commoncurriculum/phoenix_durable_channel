@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true
+  workerd: true
+
+patchedDependencies:
+  # The package's `files` leaves out the drizzle/ migrations its source imports.
+  "@durable-streams-cloudflare/server": patches/@durable-streams-cloudflare__server.patch

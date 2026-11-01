@@ -1,0 +1,67 @@
+name: Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # PhoenixDurableChannel.Stream.Mongo's tests; test/support/phoenix-server.ts uses it on this port.
+    services:
+      mongo:
+        image: mongo:7.0
+        ports: ["4403:27017"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The browser tests run against a real Phoenix server.
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "25.3.2.21"
+          elixir-version: "1.17.3-otp-25"
+          version-type: strict
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            test/server/deps
+            test/server/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('test/server/mix.lock') }}
+
+      # And against S2 Lite, from the s2 CLI at the version in mise.toml.
+      - name: Install the s2 CLI
+        run: |
+          curl -fsSL -o /tmp/s2.zip https://github.com/s2-streamstore/s2/releases/download/s2-cli-v0.43.2/s2-x86_64-unknown-linux-gnu.zip
+          sudo unzip -o /tmp/s2.zip -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/s2
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for vitest browser mode
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Typecheck
+        run: pnpm lint
+
+      - name: Run tests
+        run: pnpm test
+
+      # TLC needs Java 11 or later.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Model-check with TLA+
+        run: verification/check.sh
