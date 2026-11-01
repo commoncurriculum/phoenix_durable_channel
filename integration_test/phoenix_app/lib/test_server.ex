@@ -45,9 +45,14 @@ end
 defmodule TestServer.Endpoint do
   use Phoenix.Endpoint, otp_app: :test_server
 
-  @options [check_origin: false, serializer: [{PhoenixDurableChannel.Serializer, "~> 2.0.0"}]]
+  @options [
+    check_origin: false,
+    connect_info: [:auth_token],
+    serializer: [{PhoenixDurableChannel.Serializer, "~> 2.0.0"}]
+  ]
 
   socket("/socket", TestServer.UserSocket,
+    auth_token: true,
     websocket: [timeout: 45_000] ++ @options,
     longpoll: [window_ms: 1_000] ++ @options
   )
@@ -80,7 +85,13 @@ defmodule TestServer.UserSocket do
 
   @impl true
   def connect(%{"token" => "bad"}, _socket, _connect_info), do: :error
-  def connect(params, socket, _connect_info), do: {:ok, assign(socket, :id, params["id"])}
+
+  def connect(params, socket, connect_info),
+    do:
+      {:ok,
+       socket
+       |> assign(:id, params["id"])
+       |> assign(:auth_token, connect_info[:auth_token])}
 
   @impl true
   def id(%{assigns: %{id: nil}}), do: nil
@@ -106,6 +117,9 @@ defmodule TestServer.RoomChannel do
   def handle_in("echo", payload, socket), do: {:reply, {:ok, payload}, socket}
   def handle_in("error", payload, socket), do: {:reply, {:error, payload}, socket}
   def handle_in("noreply", _payload, socket), do: {:noreply, socket}
+
+  def handle_in("auth_token", _payload, socket),
+    do: {:reply, {:ok, %{auth_token: socket.assigns.auth_token}}, socket}
 
   def handle_in("joins", _payload, socket),
     do: {:reply, {:ok, %{joins: TestServer.Joins.count(socket.topic)}}, socket}

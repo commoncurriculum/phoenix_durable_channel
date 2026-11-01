@@ -1,6 +1,6 @@
 import type { Actor } from "xstate"
 import { ignore, startMachine, type TransportConnection } from "./actors"
-import { SOCKET_STATES, TRANSPORTS } from "./constants"
+import { AUTH_TOKEN_PREFIX, SOCKET_STATES, TRANSPORTS } from "./constants"
 import { longPollMachine } from "./machines/longpoll"
 
 const DEFAULT_LONGPOLL_TIMEOUT = 20_000
@@ -14,9 +14,12 @@ export class LongPoll implements TransportConnection {
   onclose: TransportConnection["onclose"] = ignore
   readonly actor: Actor<typeof longPollMachine>
 
-  constructor(endPoint: string) {
+  constructor(endPoint: string, protocols?: Array<string>) {
+    const [, bearer] = protocols ?? []
+    const authToken = bearer === undefined ? null : atob(bearer.slice(AUTH_TOKEN_PREFIX.length))
     this.actor = startMachine(longPollMachine, (later) => ({
       hooks: {
+        authToken,
         endpoint: endPoint
           .replace("ws://", "http://")
           .replace("wss://", "https://")

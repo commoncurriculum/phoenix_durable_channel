@@ -51,7 +51,10 @@ export interface TransportConnection {
 
 export const ignore = () => {}
 
-export type TransportConstructor = new (endPoint: string) => TransportConnection | WebSocket
+export type TransportConstructor = new (
+  endPoint: string,
+  protocols?: Array<string>,
+) => TransportConnection | WebSocket
 
 export type TransportEvent =
   | { type: "TRANSPORT_OPEN" }
@@ -65,6 +68,8 @@ export type TransportCommand =
 export interface TransportInput {
   transport: TransportConstructor
   url: string
+  protocols: Array<string> | undefined
+  binaryType: BinaryType
   timeout: number
 }
 
@@ -72,8 +77,8 @@ export const transport = fromCallback<TransportCommand, TransportInput, Transpor
   ({ input, sendBack, receive }) => {
     const connection = Effect.acquireRelease(
       Effect.sync(() => {
-        const connection = new input.transport(input.url)
-        connection.binaryType = "arraybuffer"
+        const connection = new input.transport(input.url, input.protocols)
+        connection.binaryType = input.binaryType
         if ("timeout" in connection) connection.timeout = input.timeout
         connection.onopen = () => sendBack({ type: "TRANSPORT_OPEN" })
         connection.onerror = (error: unknown) => sendBack({ type: "TRANSPORT_ERROR", error })

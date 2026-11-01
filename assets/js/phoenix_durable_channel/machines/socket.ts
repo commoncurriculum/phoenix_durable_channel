@@ -13,6 +13,8 @@ export type TransportKind = "websocket" | "longpoll"
 
 export interface SocketHooks {
   url(): string
+  protocols(): Array<string> | undefined
+  binaryType: BinaryType
   transportFor(kind: TransportKind): TransportConstructor
   longpollerTimeout: number
   activity: ActivityTracker | null
@@ -184,6 +186,8 @@ export const socketMachine = setup({
                 input: ({ context }) => ({
                   transport: context.hooks.transportFor(context.transport),
                   url: context.hooks.url(),
+                  protocols: context.hooks.protocols(),
+                  binaryType: context.hooks.binaryType,
                   timeout: context.hooks.longpollerTimeout,
                 }),
               },

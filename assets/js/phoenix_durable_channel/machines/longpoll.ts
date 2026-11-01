@@ -15,6 +15,7 @@ const timedOut: PollResponse = { status: "timeout", token: null, messages: [] }
 interface RequestInput {
   endpoint: string
   token: string | null
+  authToken: string | null
   method: "GET" | "POST"
   body: string | null
   timeout: number
@@ -29,6 +30,7 @@ const request = fromPromise<PollResponse, RequestInput>(({ input, signal }) =>
         signal,
         headers: {
           "Content-Type": input.method === "GET" ? "application/json" : "application/x-ndjson",
+          ...(input.authToken === null ? {} : { "X-Phoenix-AuthToken": input.authToken }),
         },
       }),
     ).pipe(
@@ -47,6 +49,7 @@ const request = fromPromise<PollResponse, RequestInput>(({ input, signal }) =>
 
 export interface LongPollHooks {
   endpoint: string
+  authToken: string | null
   timeout(): number
   opened(): void
   message(data: string): void
@@ -73,6 +76,7 @@ const internalServerError: Failure = {
 const poll = (context: LongPollContext): RequestInput => ({
   endpoint: context.hooks.endpoint,
   token: context.token,
+  authToken: context.hooks.authToken,
   method: "GET",
   body: null,
   timeout: context.hooks.timeout(),
@@ -268,6 +272,7 @@ export const longPollMachine = setup({
                 input: ({ context }) => ({
                   endpoint: context.hooks.endpoint,
                   token: context.token,
+                  authToken: context.hooks.authToken,
                   method: "POST" as const,
                   body: context.sending.join("\n"),
                   timeout: context.hooks.timeout(),

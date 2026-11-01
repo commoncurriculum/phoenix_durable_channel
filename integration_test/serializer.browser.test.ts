@@ -98,3 +98,29 @@ test("builds query strings the way Phoenix reads them", () => {
   expect(appendParams("/socket", { token: "t" })).toBe("/socket?token=t")
   expect(appendParams("/socket?vsn=2", { token: "t" })).toBe("/socket?vsn=2&token=t")
 })
+
+test("measures binary metadata in UTF-8 bytes, up to 255 each", () => {
+  const utf8 = (value: string) => [...new TextEncoder().encode(value)]
+  const encoded = encode({
+    join_ref: "🚀",
+    ref: "1",
+    topic: "room:café",
+    event: "é",
+    payload: bytes(1),
+  })
+  expect([...new Uint8Array(encoded as ArrayBuffer)]).toEqual([
+    0,
+    4,
+    1,
+    10,
+    2,
+    ...utf8("🚀1room:caféé"),
+    1,
+  ])
+
+  const message = { join_ref: "1", ref: "1", topic: "t", event: "e", payload: bytes(1) }
+  expect(encode({ ...message, topic: "é".repeat(127) })).toBeInstanceOf(ArrayBuffer)
+  expect(() => encode({ ...message, topic: "é".repeat(128) })).toThrow(
+    "unable to convert topic to binary: must be less than or equal to 255 bytes, but is 256 bytes",
+  )
+})

@@ -1,5 +1,6 @@
 export const DEFAULT_VSN = "2.0.0"
 export const DEFAULT_TIMEOUT = 10_000
+export const AUTH_TOKEN_PREFIX = "base64url.bearer.phx."
 
 export const SOCKET_STATES = {
   connecting: 0,

@@ -36,24 +36,29 @@ export const Serializer = {
 }
 
 function binaryEncode(message: Message, payload: ArrayBuffer): ArrayBuffer {
-  const joinRef = message.join_ref ?? ""
-  const ref = message.ref ?? ""
-  const { topic, event } = message
-  const metaLength = META_LENGTH + joinRef.length + ref.length + topic.length + event.length
-  const header = new ArrayBuffer(HEADER_LENGTH + metaLength)
-  const view = new DataView(header)
-  let offset = 0
-  view.setUint8(offset++, KINDS.push)
-  view.setUint8(offset++, joinRef.length)
-  view.setUint8(offset++, ref.length)
-  view.setUint8(offset++, topic.length)
-  view.setUint8(offset++, event.length)
-  for (const text of [joinRef, ref, topic, event]) {
-    for (const character of text) view.setUint8(offset++, character.charCodeAt(0))
+  const encoder = new TextEncoder()
+  const fields = {
+    join_ref: encoder.encode(message.join_ref ?? ""),
+    ref: encoder.encode(message.ref ?? ""),
+    topic: encoder.encode(message.topic),
+    event: encoder.encode(message.event),
   }
-  const combined = new Uint8Array(header.byteLength + payload.byteLength)
-  combined.set(new Uint8Array(header), 0)
-  combined.set(new Uint8Array(payload), header.byteLength)
+  const sizes = Object.entries(fields).map(([name, bytes]) => {
+    if (bytes.byteLength > 255)
+      throw new Error(
+        `unable to convert ${name} to binary: must be less than or equal to 255 bytes, but is ${bytes.byteLength} bytes`,
+      )
+    return bytes.byteLength
+  })
+  const meta = Object.values(fields)
+  const header = HEADER_LENGTH + META_LENGTH + sizes.reduce((total, size) => total + size, 0)
+  const combined = new Uint8Array(header + payload.byteLength)
+  combined.set([KINDS.push, ...sizes], 0)
+  meta.reduce((offset, bytes) => {
+    combined.set(bytes, offset)
+    return offset + bytes.byteLength
+  }, HEADER_LENGTH + META_LENGTH)
+  combined.set(new Uint8Array(payload), header)
   return combined.buffer
 }
 

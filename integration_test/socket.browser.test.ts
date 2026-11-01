@@ -243,3 +243,45 @@ test("uses the encode and decode it is given", async () => {
   await join(channel)
   expect(encoded).toEqual(["phx_join"])
 })
+
+test("sends authToken in Sec-WebSocket-Protocol, and over LongPoll in a header", async () => {
+  for (const transport of [WebSocket, LongPoll]) {
+    const tokens = ["first-token", "second-token"]
+    const socket = openSocket("/socket", { transport, authToken: () => tokens[0]! })
+    socket.connect()
+    const first = socket.channel(topic("auth"))
+    await join(first)
+    expect(await answer(first.push("auth_token", {}))).toEqual({
+      status: "ok",
+      response: { auth_token: "first-token" },
+    })
+    tokens.shift()
+    await new Promise<void>((resolve) => socket.disconnect(resolve))
+    socket.connect()
+    const second = socket.channel(topic("auth"))
+    await join(second)
+    expect(await answer(second.push("auth_token", {}))).toEqual({
+      status: "ok",
+      response: { auth_token: "second-token" },
+    })
+  }
+
+  const plain = openSocket("/socket", { authToken: "plain", binaryType: "blob" })
+  expect(plain.binaryType).toBe("blob")
+  plain.connect()
+  const channel = plain.channel(topic("auth"))
+  await join(channel)
+  expect(await answer(channel.push("auth_token", {}))).toEqual({
+    status: "ok",
+    response: { auth_token: "plain" },
+  })
+
+  const none = openSocket()
+  none.connect()
+  const anonymous = none.channel(topic("auth"))
+  await join(anonymous)
+  expect(await answer(anonymous.push("auth_token", {}))).toEqual({
+    status: "ok",
+    response: { auth_token: null },
+  })
+})

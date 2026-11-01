@@ -3,7 +3,7 @@ import { createReactive } from "@supergrain/kernel"
 import type { Actor, SnapshotFrom } from "xstate"
 import { startMachine, type CloseDetails, type Later, type TransportConstructor } from "./actors"
 import { Channel, type ChannelOptions } from "./channel"
-import { DEFAULT_TIMEOUT, DEFAULT_VSN, TRANSPORTS } from "./constants"
+import { AUTH_TOKEN_PREFIX, DEFAULT_TIMEOUT, DEFAULT_VSN, TRANSPORTS } from "./constants"
 import { LongPoll } from "./longpoll"
 import { socketMachine, type SocketHooks, type TransportKind } from "./machines/socket"
 import { Serializer, type EncodedMessage, type Message } from "./serializer"
@@ -29,6 +29,8 @@ export interface SocketOptions {
   logger?: (kind: string, message: string, data?: unknown) => void
   longpollerTimeout?: number
   params?: Params | (() => Params)
+  authToken?: string | (() => string)
+  binaryType?: BinaryType
   vsn?: string
   websocketRetryAfterMs?: number
   offlineAfterMs?: number
@@ -66,7 +68,9 @@ export class Socket {
   readonly longpollerTimeout: number
   readonly reconnectAfterMs: (tries: number) => number
   readonly rejoinAfterMs: (tries: number) => number
+  readonly binaryType: BinaryType
   private params: () => Params
+  private readonly authToken: (() => string) | null
   private ref = 0
   private readonly logger: SocketOptions["logger"]
   private webSocket: TransportConstructor
@@ -85,6 +89,10 @@ export class Socket {
     this.decode = options.decode ?? ((raw, callback) => Serializer.decode(raw, callback))
     const params = options.params ?? {}
     this.params = typeof params === "function" ? params : () => params
+    const authToken = options.authToken
+    this.authToken =
+      authToken === undefined ? null : typeof authToken === "function" ? authToken : () => authToken
+    this.binaryType = options.binaryType ?? "arraybuffer"
     this.reconnectAfterMs =
       options.reconnectAfterMs ?? ((tries) => jitter(Math.min(10 * 2 ** (tries - 1), 5000)))
     this.rejoinAfterMs =
@@ -265,6 +273,11 @@ export class Socket {
   private hooks(activity: ActivityTracker | null, later: Later): SocketHooks {
     return {
       url: () => this.endPointURL(),
+      protocols: () =>
+        this.authToken === null
+          ? undefined
+          : ["phoenix", `${AUTH_TOKEN_PREFIX}${btoa(this.authToken()).replace(/=/g, "")}`],
+      binaryType: this.binaryType,
       transportFor: (kind) => (kind === "longpoll" ? LongPoll : this.webSocket),
       longpollerTimeout: this.longpollerTimeout,
       activity,
