@@ -26,7 +26,6 @@ test("suspends while the user is away, and reconnects the moment they are back",
   const channel = socket.channel(topic("activity"))
   await join(channel)
 
-  // Back before the suspend: the connection stays, and is checked at once.
   const heartbeats: Array<string> = []
   socket.onMessage((message) => {
     if (message.topic === "phoenix") heartbeats.push(message.event)
@@ -76,7 +75,6 @@ test("a socket that is not connected stays that way while the user is away", asy
   socket.connect()
   await waitFor(() => socket.isConnected())
 
-  // Disconnecting stops watching the user; connecting again starts again.
   socket.disconnect()
   socket.connect()
   await waitFor(() => socket.isConnected())

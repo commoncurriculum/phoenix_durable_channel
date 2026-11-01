@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Model-checks every module here: every rule must hold for the code as
-# it is, and each rule must break on the change it guards against, so a rule that can no
-# longer fail is caught.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -22,8 +19,6 @@ tlc() {
 
 failures=0
 
-# $1: the module. $2: its constants, one per line. Then, on stdin, one line per change:
-# the Broken value, the rule it must break, and INVARIANT or PROPERTY.
 check() {
   local module="$1" constants="$2"
   echo "$module, the code as it is: every rule holds"
@@ -35,7 +30,6 @@ check() {
   fi
   grep "distinct states found" <<<"$out"
   while read -r broken rule kind; do
-    # Deadlock is left out so that the run reports this rule, not a stuck state first.
     printf 'SPECIFICATION Spec\nCONSTANTS\n%s\n  Broken = "%s"\nCHECK_DEADLOCK FALSE\n%s %s\n' \
       "$constants" "$broken" "$kind" "$rule" >"$work/$module-$broken-$rule.cfg"
     out="$(tlc "$module" "$module-$broken-$rule.cfg" || true)"

@@ -50,7 +50,6 @@ type SocketEvent =
   | { type: "CONNECTION_LOST" }
   | { type: "REPLACE_TRANSPORT"; transport: TransportKind }
 
-/** Reports the user's activity, starting with where it is now, for as long as the state that invoked it. */
 const watchActivity = fromCallback<SocketEvent, { activity: ActivityTracker | null }, SocketEvent>(
   ({ input, sendBack }) => {
     const { activity } = input
@@ -69,13 +68,11 @@ interface SocketContext {
   hooks: SocketHooks
   settings: SocketSettings
   transport: TransportKind
-  // Falling back to LongPoll is only for a WebSocket that never opened.
   webSocketOpened: boolean
   fellBack: boolean
   tries: number
   heartbeatRef: string | null
   closeRequest: { code: number; reason: string }
-  // Pushes made while the connection is not open, sent once it opens, as in phoenix.js.
   buffer: Array<Message>
   closeWasClean: boolean
   establishedConnections: number
@@ -99,15 +96,6 @@ const heartbeatTimedOut: CloseDetails = {
   wasClean: false,
 }
 
-/**
- * The connection, as three regions side by side:
- * - connection: `disconnected` until `connect()`; then `engaged`, which is `live` (one
- *   transport, opening or open), `waitingToReconnect` or `suspended`, until `disconnect()`.
- *   Any close it did not ask for, whatever its code, leads to a reconnect.
- * - activity: whether the user is here, from @supergrain/activity. Coming back reconnects
- *   at once; being away long enough suspends the connection.
- * - online: what to tell the user. Short drops do not count as offline.
- */
 export const socketMachine = setup({
   types: {
     context: {} as SocketContext,
@@ -165,7 +153,6 @@ export const socketMachine = setup({
         PUSH: {
           actions: { type: "buffer", params: ({ event }) => event.message },
         },
-        // As phoenix.js: closes the connection without reconnecting; `connect()` uses the new one.
         REPLACE_TRANSPORT: {
           target: ".disconnected",
           actions: [
@@ -234,7 +221,6 @@ export const socketMachine = setup({
                   target: "suspended",
                   actions: { type: "close", params: suspended },
                 },
-                // `open` closes the transport and waits for its close; a connection still opening is dropped.
                 DISCONNECT: {
                   target: "#socket.connection.disconnected",
                   actions: [
@@ -277,7 +263,6 @@ export const socketMachine = setup({
                       closeWasClean: false,
                       establishedConnections: ({ context }) => context.establishedConnections + 1,
                     }),
-                    // Buffered pushes go out before the open callbacks run, as in phoenix.js.
                     ({ context }) => {
                       for (const message of context.buffer) context.hooks.send(message)
                     },
@@ -290,7 +275,6 @@ export const socketMachine = setup({
                     raise({ type: "CONNECTION_LOST" }),
                   ],
                   invoke: {
-                    // After falling back to LongPoll, try WebSocket again now and then.
                     src: "sleep",
                     input: ({ context }) => ({
                       ms: context.fellBack ? context.settings.websocketRetryAfterMs : null,
@@ -386,7 +370,6 @@ export const socketMachine = setup({
                         params: ({ event }) => closeDetails(event),
                       },
                     },
-                    // Connecting again before the close arrives drops the old connection.
                     CONNECT: {
                       target: "#socket.connection.engaged.live",
                       reenter: true,

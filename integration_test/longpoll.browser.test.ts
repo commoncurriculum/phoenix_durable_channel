@@ -13,7 +13,6 @@ test("joins, pushes and receives over LongPoll", async () => {
   const channel = socket.channel(topic("longpoll"), { via: "longpoll" })
   expect(await join(channel)).toMatchObject({ params: { via: "longpoll" } })
 
-  // Pushed in one turn of the event loop: one POST carries them all.
   const pushes = [1, 2, 3].map((n) => channel.push("echo", { n }))
   expect(await Promise.all(pushes.map(answer))).toEqual(
     [1, 2, 3].map((n) => ({ status: "ok", response: { n } })),
@@ -76,7 +75,6 @@ test("LongPoll reports a refused socket, a server it cannot reach, and a poll th
     reason: "internal server error",
     wasClean: false,
   })
-  // Closing again does nothing.
   unreachable.close()
   expect(unreachableCloses).toHaveLength(1)
 
@@ -135,11 +133,9 @@ test("falls back to LongPoll when WebSocket never opens, and tries WebSocket aga
   await join(channel)
   expect(socket.status.transport).toBe("longpoll")
   expect(socket.transport).toBe(LongPoll)
-  // The WebSocket retry fails here too, so it lands on LongPoll again.
   await waitFor(() => socket.establishedConnections >= 2 && channel.state === "joined", 8000)
   expect(socket.status.transport).toBe("longpoll")
 
-  // A WebSocket that does not answer in time falls back too.
   const slow = openSocket("/hang", { longPollFallbackMs: 200 })
   slow.connect()
   await waitFor(() => slow.isConnected())

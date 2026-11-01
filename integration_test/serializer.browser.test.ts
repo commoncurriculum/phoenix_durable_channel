@@ -1,5 +1,9 @@
 import { expect, test } from "vitest"
-import { Serializer, type EncodedMessage, type Message } from "../assets/js/phoenix_durable_channel/serializer"
+import {
+  Serializer,
+  type EncodedMessage,
+  type Message,
+} from "../assets/js/phoenix_durable_channel/serializer"
 import { appendParams, serialize } from "../assets/js/phoenix_durable_channel/url"
 
 const encode = (message: Message) => Serializer.encode(message, (encoded) => encoded)
@@ -25,7 +29,6 @@ test("encodes and decodes Phoenix's JSON and binary frames", () => {
     payload: {},
   })
 
-  // A binary push: kind, then the sizes of join_ref, ref, topic and event, then each of them.
   const binaryPush = encode({
     join_ref: "1",
     ref: "2",
@@ -52,7 +55,6 @@ test("encodes and decodes Phoenix's JSON and binary frames", () => {
   })
   expect([...new Uint8Array(withoutRefs as ArrayBuffer)]).toEqual([0, 0, 0, 1, 1, ...text("te"), 7])
 
-  // What a server sends: a push has no ref, a reply carries its status, a broadcast has neither ref.
   const push = decode(bytes(0, 1, 1, 1, ...text("1te"), 5, 6))
   expect(push).toMatchObject({
     join_ref: "1",

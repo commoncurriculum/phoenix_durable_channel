@@ -1,9 +1,4 @@
 defmodule JepsenServer.Application do
-  @moduledoc """
-  The server the Jepsen test runs on each node: one durable channel, `jepsen:<client>`, on
-  phoenix-durable-channel's server library and nothing else. One of the library's stores, which all
-  nodes share, is both its ledger and its stream.
-  """
   use Application
 
   def start(_type, _args) do
@@ -37,11 +32,6 @@ defmodule JepsenServer.Application do
 end
 
 defmodule JepsenServer.Peers do
-  @moduledoc """
-  Connects to the other nodes every second. Distributed Erlang connects again only when a
-  message needs it, and after a partition heals `:global`, which keeps each topic to one
-  channel process, needs the nodes connected.
-  """
   use Task, restart: :permanent
 
   def start_link(peers), do: Task.start_link(__MODULE__, :connect, [peers])
@@ -58,10 +48,8 @@ defmodule JepsenServer.Endpoint do
 
   @options [check_origin: false, serializer: [{PhoenixDurableChannel.Serializer, "~> 2.0.0"}]]
 
-  # A poll may reach any node: Phoenix finds the session's process on its node over PubSub.
   socket("/socket", JepsenServer.UserSocket, websocket: @options, longpoll: @options)
 
-  # A plain 200, so Jepsen can tell the node is up.
   plug(:health)
 
   def health(conn, _opts), do: conn |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
@@ -80,7 +68,6 @@ defmodule JepsenServer.UserSocket do
 end
 
 defmodule JepsenServer.Channel do
-  @moduledoc "Each durable `add` from the client is appended to the topic's stream as `added`."
   use Phoenix.Channel
 
   use PhoenixDurableChannel.Channel,

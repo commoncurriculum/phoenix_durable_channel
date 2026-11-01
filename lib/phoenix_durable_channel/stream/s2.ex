@@ -1,25 +1,4 @@
 defmodule PhoenixDurableChannel.Stream.S2 do
-  @moduledoc """
-  A `PhoenixDurableChannel.Stream` on [S2](https://s2.dev): each topic is an S2 stream of the same
-  name, which the client reads with S2's own server-sent events, so the messages never pass
-  through Phoenix.
-
-  Each record's body is the JSON `{event, payload}`, and record `seq_num` n is message number
-  n + 1. The basin must create streams on append and on read. The join reply carries a token
-  that can only read the client's own stream, for a day; without an account endpoint, as on
-  S2 Lite, the client reads without one.
-
-  It is also a `PhoenixDurableChannel.Ledger`: the replies to the client's durable messages go to
-  the stream `<topic>/replies`, each the JSON `{number, status, response}`, which the
-  client's token cannot read.
-
-      config :phoenix_durable_channel, PhoenixDurableChannel.Stream.S2,
-        name: MyApp.S2,                         # an `S2` client started with this basin
-        basin: "my-basin",
-        basin_endpoint: "https://{basin}.b.aws.s2.dev",
-        account_endpoint: "https://aws.s2.dev", # nil on S2 Lite
-        token: "..."                            # issues the read tokens
-  """
   @behaviour PhoenixDurableChannel.Ledger
   @behaviour PhoenixDurableChannel.Stream
 
@@ -45,13 +24,11 @@ defmodule PhoenixDurableChannel.Stream.S2 do
     }
   end
 
-  @doc "The number of `stream`'s last message: the `seq_num` of its tail."
   def last(stream) do
     {:ok, %S2.V1.StreamPosition{seq_num: last}} = S2.check_tail(config()[:name], stream)
     last
   end
 
-  @doc "A token that can only read `stream`, for a day. Nil without an account endpoint."
   def read_token(stream) do
     if config()[:account_endpoint] do
       client =
@@ -78,7 +55,6 @@ defmodule PhoenixDurableChannel.Stream.S2 do
     end
   end
 
-  @doc "The S2 stream where `topic`'s ledger keeps its replies."
   def replies(topic), do: topic <> "/replies"
 
   @impl PhoenixDurableChannel.Ledger
@@ -99,7 +75,6 @@ defmodule PhoenixDurableChannel.Stream.S2 do
     :ok
   end
 
-  # Reply n is record n - 1, or later when an append was repeated.
   @impl PhoenixDurableChannel.Ledger
   def reply(socket, number), do: reply(socket, number, number - 1)
 

@@ -1,10 +1,7 @@
 import { Schema } from "effect"
 
-// What the server sends, checked as it is read, so nothing downstream takes its shape on trust.
-
 const Ref = Schema.NullOr(Schema.String)
 
-/** `[join_ref, ref, topic, event, payload]`, and a durable message's number after it. */
 export const decodeFrame = Schema.decodeUnknownSync(
   Schema.parseJson(
     Schema.Tuple(
@@ -22,19 +19,12 @@ export const decodeReply = Schema.decodeUnknownSync(
   Schema.Struct({ status: Schema.String, response: Schema.Unknown }),
 )
 
-/** The answer to a `phx_sync`: the last durable message the server received from the client. */
 export const decodeSyncReply = Schema.decodeUnknownSync(Schema.Struct({ received: Schema.Number }))
 
-/** The answer to a `phx_read`: the last durable message the server sent, and the store's epoch. */
 export const decodeReadReply = Schema.decodeUnknownSync(
   Schema.Struct({ sent: Schema.Number, epoch: Schema.String }),
 )
 
-/**
- * Whether an error reply says the server did not run a durable message: refused as not
- * taken, or Phoenix's "unmatched topic", for a message that reached the connection after
- * its channel process stopped, such as one replaced by a late join.
- */
 export const isNotTaken = Schema.is(
   Schema.Union(
     Schema.Struct({ phx_not_taken: Schema.String }),
@@ -42,7 +32,6 @@ export const isNotTaken = Schema.is(
   ),
 )
 
-/** A long-poll answer. Only a 200 carries messages, and only a 200 or 410 a token. */
 export const decodePollResponse = Schema.decodeUnknownSync(
   Schema.Struct({
     status: Schema.Number,
@@ -79,7 +68,6 @@ export const decodePresenceDiff = Schema.decodeUnknownSync(
   Schema.mutable(Schema.Struct({ joins: PresenceState, leaves: PresenceState })),
 )
 
-/** The data of an S2 `batch` event. A record whose first header has an empty name is a command. */
 export const decodeS2Batch = Schema.decodeUnknownSync(
   Schema.parseJson(
     Schema.Struct({
@@ -96,7 +84,6 @@ export const decodeS2Batch = Schema.decodeUnknownSync(
   ),
 )
 
-/** The body the server writes for each durable message on an S2 stream. */
 export const decodeStreamBody = Schema.decodeUnknownSync(
   Schema.parseJson(Schema.Struct({ event: Schema.String, payload: Schema.Unknown })),
 )
@@ -110,10 +97,8 @@ const PublishedReader = Schema.Struct(
   Schema.Record({ key: Schema.String, value: Schema.Unknown }),
 )
 
-/** Where a join reply says to read the channel's durable messages, if it says. */
 export const hasPublishedReader = Schema.is(Schema.Struct({ phx_reader: PublishedReader }))
 
-/** The answer to `phx_reader`: where to read, with a fresh token. */
 export const decodePublishedReader = Schema.decodeUnknownSync(PublishedReader)
 export const decodeS2Reader = Schema.decodeUnknownSync(
   Schema.Struct({
@@ -133,7 +118,6 @@ export const decodeDurableStreamsReader = Schema.decodeUnknownSync(
   }),
 )
 
-/** The data of a Durable Streams `data` event on a JSON stream: the messages, in order. */
 export const decodeDurableStreamsData = Schema.decodeUnknownSync(
   Schema.parseJson(
     Schema.Array(
@@ -146,7 +130,6 @@ export const decodeDurableStreamsData = Schema.decodeUnknownSync(
   ),
 )
 
-/** The data of a Durable Streams `control` event: where the next read starts. */
 export const decodeDurableStreamsControl = Schema.decodeUnknownSync(
   Schema.parseJson(Schema.Struct({ streamNextOffset: Schema.String })),
 )

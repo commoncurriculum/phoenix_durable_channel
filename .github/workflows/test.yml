@@ -10,7 +10,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # PhoenixDurableChannel.Stream.Mongo's tests; integration_test/support/phoenix-server.ts uses it on this port.
     services:
       mongo:
         image: mongo:7.0
@@ -18,7 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The browser tests run against a real Phoenix server.
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "25.3.2.21"
@@ -32,7 +30,9 @@ jobs:
             integration_test/phoenix_app/_build
           key: ${{ runner.os }}-mix-${{ hashFiles('integration_test/phoenix_app/mix.lock') }}
 
-      # And against S2 Lite, from the s2 CLI at the version in mise.toml.
+      - name: Phoenix's own server tests
+        run: mix deps.get && mix test
+
       - name: Install the s2 CLI
         run: |
           curl -fsSL -o /tmp/s2.zip https://github.com/s2-streamstore/s2/releases/download/s2-cli-v0.43.2/s2-x86_64-unknown-linux-gnu.zip
@@ -61,7 +61,6 @@ jobs:
         if: failure()
         run: tail -n 300 integration_test/durable_streams/wrangler.log
 
-      # TLC needs Java 11 or later.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

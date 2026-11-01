@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Runs the durable-streams-cloudflare worker on wrangler with one project, on fresh state.
-# Usage: [IP=<address to listen on, 127.0.0.1>] serve.sh <port> <project> <signing secret>
 set -euo pipefail
 port="$1" project="$2" secret="$3"
 here="$(cd "$(dirname "$0")" && pwd)"

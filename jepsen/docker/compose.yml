@@ -1,6 +1,3 @@
-# The cluster the Jepsen test runs against: three nodes running phoenix_app/, and the stores they
-# share: MongoDB, S2 Lite, and the Durable Streams worker (Durable Objects) on wrangler.
-# Jepsen reaches the nodes with `docker exec` and cuts them off with iptables.
 name: phoenix-durable-channel-jepsen
 
 x-node: &node
@@ -22,8 +19,6 @@ services:
   mongo:
     image: mirror.gcr.io/library/mongo:7.0
 
-  # The browsers read S2 and the worker from the host, and the nodes through
-  # docker/forward-databases.sh, all at the same 127.0.0.1 ports the server gives the clients.
   s2:
     image: mirror.gcr.io/library/ubuntu:24.04
     ports: ["127.0.0.1:4251:4243"]
@@ -31,7 +26,6 @@ services:
       - ${MISE_INSTALLS}:${MISE_INSTALLS}:ro
     command: ["${MISE_INSTALLS}/github-s2-streamstore-s2/0.43.2/s2", "lite", "--port", "4243"]
 
-  # The node image, for its CA certificates, which workerd needs to start.
   durable-streams:
     build: { context: ., dockerfile: node.Dockerfile }
     init: true

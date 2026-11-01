@@ -9,7 +9,6 @@ export interface Message {
   topic: string
   event: string
   payload: Payload
-  /** A durable message's number. Fire-and-forget messages have none. */
   number?: number
 }
 
@@ -19,11 +18,6 @@ const HEADER_LENGTH = 1
 const META_LENGTH = 4
 const KINDS = { push: 0, reply: 1, broadcast: 2 } as const
 
-/**
- * Phoenix's V2 wire format: a JSON array `[join_ref, ref, topic, event, payload]`, or the
- * binary frame Phoenix uses when the payload is an ArrayBuffer. A durable message adds its
- * number as a sixth element, which the server reads with `PhoenixDurableChannel.Serializer`.
- */
 export const Serializer = {
   encode<T>(message: Message, callback: (encoded: EncodedMessage) => T): T {
     if (message.payload instanceof ArrayBuffer)
@@ -73,7 +67,6 @@ function binaryDecode(buffer: ArrayBuffer): Message {
     const joinRefSize = view.getUint8(1)
     const topicSize = view.getUint8(2)
     const eventSize = view.getUint8(3)
-    // A push has no ref, so its header is one byte shorter.
     const start = HEADER_LENGTH + META_LENGTH - 1
     const joinRef = read(start, joinRefSize)
     const topic = read(start + joinRefSize, topicSize)

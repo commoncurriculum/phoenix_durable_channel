@@ -24,16 +24,11 @@ export const CHANNEL_EVENTS = {
   join: "phx_join",
   reply: "phx_reply",
   leave: "phx_leave",
-  // Durable messages only; answered by PhoenixDurableChannel.Channel on the server.
   sync: "phx_sync",
   read: "phx_read",
   reader: "phx_reader",
 } as const
 
-/**
- * The most durable messages a channel has unanswered at once. A `PhoenixDurableChannel.Ledger`
- * keeps at least this many replies, so a resend is always of one it kept.
- */
 export const DURABLE_WINDOW = 32
 
 export const TRANSPORTS = {

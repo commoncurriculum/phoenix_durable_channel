@@ -13,15 +13,12 @@ export interface ChannelHooks {
   answerJoin(status: "ok" | "error" | "timeout", response: unknown): void
   answerLeave(status: "ok" | "timeout"): void
   joined(): void
-  /** Whether the channel reads the server's durable messages: it was opened with `durable`. */
   durable: boolean
-  /** The stream a published reader names. */
   streamFor(
     reader: PublishedReader,
     latest: () => PublishedReader,
     refresh: () => Promise<void>,
   ): MessageStream
-  /** Asks the server for the reader again, with a fresh token. */
   fetchReader(): Promise<PublishedReader>
   after: number | null
   deliver(message: StreamMessage): void
@@ -46,18 +43,11 @@ interface ChannelContext {
   joinRef: string | null
   leaveRef: string | null
   rejoinTries: number
-  // What the server answered the join that led to `joined`.
   joinResponse: unknown
 }
 
 type FollowEvent = { type: "PUBLISHED"; reader: PublishedReader }
 
-/**
- * Reads the store `published` names for as long as the state that invoked it, from the
- * app's `after` or else from the store's last message at the first join, in the epoch
- * the join published. Each later join reply's reader, and each one fetched after the
- * store refused a token, becomes the `latest` the stream reads its token from.
- */
 const readStream = fromCallback<FollowEvent, { hooks: ChannelHooks; published: PublishedReader }>(
   ({ input, receive }) => {
     const { after, deliver, rejoinAfterMs, streamFor, fetchReader } = input.hooks
@@ -81,10 +71,6 @@ const readStream = fromCallback<FollowEvent, { hooks: ChannelHooks; published: P
   },
 )
 
-/**
- * Where the channel reads the server's durable messages: `waiting` until the first join
- * reply says, then `reading` that store until the channel closes.
- */
 export const followMachine = setup({
   types: {
     context: {} as { hooks: ChannelHooks; published: PublishedReader },
@@ -122,12 +108,6 @@ export const followMachine = setup({
   },
 })
 
-/**
- * A channel's life: `unjoined` until `join()`, then a `member` of the topic, `joining`,
- * `joined` and `errored` (which rejoins on its own) until it is left, closed by the
- * server, or replaced by a newer channel object on the same topic. `closed` is final for
- * this object.
- */
 export const channelMachine = setup({
   types: {
     context: {} as ChannelContext,
@@ -138,8 +118,6 @@ export const channelMachine = setup({
   guards: {
     socketIsOpen: ({ context }) => context.hooks.socketIsOpen(),
     replyIsOk: ({ event }) => event.type === "JOIN_REPLY" && event.status === "ok",
-    // A server that does not log the channel, such as a pod still running a deploy from
-    // before it did, joins it without saying where to read.
     nondurable: ({ context, event }) =>
       event.type === "JOIN_REPLY" &&
       event.status === "ok" &&
@@ -209,8 +187,6 @@ export const channelMachine = setup({
                   target: "#channel.member.errored",
                   actions: ({ context }) => {
                     context.hooks.answerJoin("timeout", undefined)
-                    // The server may still finish this join; leaving it means a late join
-                    // does not leave a channel process behind.
                     context.hooks.sendLeave(context.joinRef, context.hooks.makeRef())
                   },
                 },
@@ -218,7 +194,6 @@ export const channelMachine = setup({
               on: {
                 JOIN_REPLY: [
                   {
-                    // Not joined: it leaves that join, and joins again after a backoff.
                     guard: "nondurable",
                     target: "#channel.member.errored",
                     actions: ({ context }) => {
@@ -257,7 +232,6 @@ export const channelMachine = setup({
           },
         },
         joined: {
-          // Buffered pushes go out before the join's "ok" callbacks run, as in phoenix.js.
           entry: [
             assign({ rejoinTries: 0 }),
             ({ context }) => context.hooks.joined(),

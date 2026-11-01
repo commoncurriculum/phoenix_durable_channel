@@ -1,5 +1,9 @@
 import { expect, test } from "vitest"
-import { Presence, type PresenceEntry, type PresenceState } from "../assets/js/phoenix_durable_channel/presence"
+import {
+  Presence,
+  type PresenceEntry,
+  type PresenceState,
+} from "../assets/js/phoenix_durable_channel/presence"
 import { answer, join, openSocket, waitFor } from "./support/helpers"
 
 const entry = (...refs: Array<string>): PresenceEntry => ({
@@ -16,7 +20,6 @@ test("merges presence state and diffs, and reports joins and leaves", () => {
   const first = Presence.syncState({}, { alice: entry("1"), bob: entry("2") }, onJoin, onLeave)
   expect(Presence.list(first, (key) => key)).toEqual(["alice", "bob"])
 
-  // alice opened a second tab, bob left, carol arrived.
   const second = Presence.syncState(
     first,
     { alice: entry("1", "3"), carol: entry("4") },
@@ -26,7 +29,6 @@ test("merges presence state and diffs, and reports joins and leaves", () => {
   expect(Presence.list(second)).toEqual([entry("1", "3"), entry("4")])
   expect(Presence.list(first, (key) => key)).toEqual(["alice", "bob"])
 
-  // alice's first tab closed and a new one opened in the same sync.
   const third = Presence.syncState(
     second,
     { alice: entry("5", "3"), carol: entry("4") },
@@ -53,7 +55,6 @@ test("merges presence state and diffs, and reports joins and leaves", () => {
     "leave alice 2 -1",
   ])
 
-  // Keys are the server's, so names Object.prototype already has are ordinary keys.
   const awkward: PresenceState = JSON.parse(
     '{"toString": {"metas": [{"phx_ref": "1"}]}, "__proto__": {"metas": [{"phx_ref": "2"}]}}',
   )

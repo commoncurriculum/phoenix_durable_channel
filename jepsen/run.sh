@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Runs the Jepsen test: compiles phoenix_app/, brings up the cluster (docker/compose.yml), makes
-# the S2 basin, starts the clients' driver, then `lein run test` with any arguments given
-# here. Needs a running Docker daemon.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 export REPOSITORY="$(cd "$here/.." && pwd)"
@@ -10,7 +7,6 @@ compose=(docker compose -f "$here/docker/compose.yml")
 
 (cd "$here/phoenix_app" && ELIXIR_ERL_OPTIONS=+fnu mix do deps.get, compile)
 "${compose[@]}" up -d --build --wait --remove-orphans
-# Answered 409 when the basin is there from an earlier run.
 curl -s -o /dev/null -X POST http://127.0.0.1:4251/v1/basins -H 'content-type: application/json' \
   -d '{"basin": "phoenix-durable-channel-jepsen", "config": {"create_stream_on_append": true, "create_stream_on_read": true}}'
 

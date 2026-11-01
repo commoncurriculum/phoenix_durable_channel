@@ -5,15 +5,6 @@ import { longPollMachine } from "./machines/longpoll"
 
 const DEFAULT_LONGPOLL_TIMEOUT = 20_000
 
-/**
- * Phoenix's HTTP long-polling transport, behind the WebSocket interface the socket
- * expects. A GET waits for messages; pushes are batched into one POST of newline-
- * separated frames, and the next POST waits for this one's answer.
- *
- * Different from phoenix.js 1.7: a 410 for a session we already had closes the
- * connection, so the socket reconnects and every channel rejoins (the new server
- * session has none of them), and each failure reports one error, not two.
- */
 export class LongPoll implements TransportConnection {
   timeout = DEFAULT_LONGPOLL_TIMEOUT
   binaryType: BinaryType = "arraybuffer"

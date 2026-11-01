@@ -23,7 +23,6 @@ export interface SocketOptions {
   longPollFallbackMs?: number
   timeout?: number
   heartbeatIntervalMs?: number
-  /** How long to wait for a heartbeat reply. Default 10 s; phoenix.js used the interval. */
   heartbeatTimeoutMs?: number
   reconnectAfterMs?: (tries: number) => number
   rejoinAfterMs?: (tries: number) => number
@@ -31,13 +30,9 @@ export interface SocketOptions {
   longpollerTimeout?: number
   params?: Params | (() => Params)
   vsn?: string
-  /** After falling back to LongPoll, how often to try WebSocket again. Default 10 minutes. */
   websocketRetryAfterMs?: number
-  /** How long the connection can be down before `status.online` turns false. Default 25 s. */
   offlineAfterMs?: number
-  /** Reconnects as soon as the user is back, and suspends while they are away. */
   activity?: ActivityTracker
-  /** How long the user can be away before the connection is suspended. Default: never. */
   disconnectAfterInactiveMs?: number
   encode?: (message: Message, callback: (encoded: EncodedMessage) => void) => void
   decode?: (raw: EncodedMessage, callback: (message: Message) => void) => void
@@ -90,8 +85,6 @@ export class Socket {
     this.decode = options.decode ?? ((raw, callback) => Serializer.decode(raw, callback))
     const params = options.params ?? {}
     this.params = typeof params === "function" ? params : () => params
-    // Doubling from 10 ms up to 5 s, and from 1 s up to 10 s, each with up to 20% jitter so
-    // the clients a deploy drops do not all come back in the same millisecond.
     this.reconnectAfterMs =
       options.reconnectAfterMs ?? ((tries) => jitter(Math.min(10 * 2 ** (tries - 1), 5000)))
     this.rejoinAfterMs =
@@ -127,17 +120,14 @@ export class Socket {
     )
   }
 
-  /** The transport in use: the WebSocket constructor, or `LongPoll` after a fallback. */
   get transport(): TransportConstructor {
     return this.status.transport === "longpoll" ? LongPoll : this.webSocket
   }
 
-  /** Whether the last close was clean, as phoenix.js. */
   get closeWasClean(): boolean {
     return this.actor.getSnapshot().context.closeWasClean
   }
 
-  /** How many times a connection has opened, as phoenix.js. */
   get establishedConnections(): number {
     return this.actor.getSnapshot().context.establishedConnections
   }
@@ -158,7 +148,6 @@ export class Socket {
     this.actor.send({ type: "DISCONNECT", code, reason })
   }
 
-  /** Closes the connection and uses `transport` from the next `connect()`, as in phoenix.js. */
   replaceTransport(transport: TransportConstructor): void {
     this.webSocket = transport
     this.actor.send({
@@ -167,7 +156,6 @@ export class Socket {
     })
   }
 
-  /** Sends a heartbeat and calls back with the round trip in ms; false when not connected. */
   ping(callback: (latency: number) => void): boolean {
     if (!this.isConnected()) return false
     const ref = this.makeRef()
@@ -193,8 +181,6 @@ export class Socket {
     options: ChannelOptions = {},
   ): Channel {
     const channel = new Channel(topic, params, this, options)
-    // A newer channel object for a topic replaces the older one, so two objects never
-    // rejoin over each other.
     for (const older of this.channels.filter((existing) => existing.topic === topic))
       older.replace()
     this.channels.push(channel)
@@ -238,7 +224,6 @@ export class Socket {
     return `${this.ref}`
   }
 
-  /** Sends the message now if the connection is open, otherwise once it opens. */
   push(message: Message): void {
     this.log(
       "push",
@@ -249,7 +234,6 @@ export class Socket {
   }
 
   endPointURL(): string {
-    // A path like "/socket" is resolved against the page, with http(s) turned into ws(s).
     const url = new URL(
       appendParams(appendParams(this.endPoint, this.params()), {
         vsn: this.vsn,
@@ -286,7 +270,6 @@ export class Socket {
       activity,
       makeRef: () => this.makeRef(),
       reconnectAfterMs: (tries) => this.reconnectAfterMs(tries),
-      // Only an open connection sends, and it has its transport.
       send: (message) =>
         later(() =>
           this.encode(message, (data) =>

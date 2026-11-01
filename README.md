@@ -14,6 +14,8 @@ It is laid out like Phoenix's own repo: the Elixir package at the root, the Java
 | `mix.exs`, `lib/`                   | The Elixir package `phoenix_durable_channel`: `PhoenixDurableChannel.Channel`, the serializer, the stores                                                   |
 | `assets/js/phoenix_durable_channel` | The npm package `phoenix_durable_channel`: `Socket`, `Channel`, `Push`, `Presence`, `LongPoll`, in TypeScript on XState, Effect and supergrain              |
 | `integration_test/`                 | Browser tests: the client in Chromium against `integration_test/phoenix_app`, a real Phoenix app on this library, with real MongoDB, S2 and Durable Streams |
+| `test/`                             | Phoenix's own server channel and serializer tests, copied from Phoenix, run on `PhoenixDurableChannel.Channel` and its serializer                           |
+| `phoenix_js_test/`                  | Phoenix's own JavaScript client tests, copied from Phoenix, run on this client                                                                              |
 | `jepsen/`                           | A Jepsen test of durable messages under partitions, crashes and pauses                                                                                      |
 | `verification/`                     | TLA+ models of the client and the server channel                                                                                                            |
 
@@ -292,9 +294,15 @@ socket.channel(topic, params, {
 ```sh
 pnpm install
 pnpm test
+mix test
+npx jest -c phoenix_js_test/jest.config.cjs -i
 ```
 
-The tests in `integration_test/` run the client in Chromium against `integration_test/phoenix_app`, a Phoenix 1.7.21 app on this library, with MongoDB, S2 Lite and the `durable-streams-cloudflare` worker on wrangler. `integration_test/support/phoenix-server.ts` starts them all; it needs Elixir and the `s2` CLI from mise. Coverage of `assets/js` must stay at 100%.
+`mix test` runs Phoenix 1.8.16's channel tests (`test/phoenix/integration`, `test/phoenix/test/channel_test.exs`) and its V2 serializer test, as Phoenix ships them, with three changes: each test channel adds `use PhoenixDurableChannel.Channel`, each test endpoint's socket uses `PhoenixDurableChannel.Serializer` for vsn 2.0.0, and the log assertion names that serializer. When Phoenix releases, copy its files over and make the same three changes; `diff` against Phoenix's tag shows exactly them.
+
+`phoenix_js_test/` runs Phoenix 1.8.16's `assets/test` against this client, through `phoenix_js_test/js/phoenix`, which re-exports it.
+
+The tests in `integration_test/` run the client in Chromium against `integration_test/phoenix_app`, a Phoenix 1.8.16 app on this library, with MongoDB, S2 Lite and the `durable-streams-cloudflare` worker on wrangler. `integration_test/support/phoenix-server.ts` starts them all; it needs Elixir and the `s2` CLI from mise. Coverage of `assets/js` must stay at 100%.
 
 ## Jepsen
 

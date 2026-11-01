@@ -19,10 +19,8 @@ import {
 import type { Params } from "./url"
 import { decodePublishedReader, decodeReply, decodeSyncReply } from "./wire"
 
-// For a store the client has no reader for.
 const unread: MessageStream = { read: () => ignore }
 
-/** What a channel needs from its socket. */
 export interface ChannelSocket {
   timeout: number
   isConnected(): boolean
@@ -34,21 +32,8 @@ export interface ChannelSocket {
 }
 
 export interface ChannelOptions {
-  /**
-   * Lets this channel send and receive durable messages. The server channel must
-   * `use PhoenixDurableChannel.Channel`.
-   */
   durable?: boolean
-  /**
-   * With `durable`: how to read the server's durable messages from each store a join reply
-   * can name, by its `phx_reader.type`. Added to `"phoenix"`, the channel itself, and
-   * `builtInReaders` (S2 and Durable Streams).
-   */
   readers?: Record<string, ReaderFactory>
-  /**
-   * With `durable`: the last server message the app already has, to receive what followed.
-   * Without it, the channel receives what the server logs after the first join.
-   */
   after?: number
 }
 
@@ -70,7 +55,6 @@ export class Channel {
   readonly status: { state: ChannelState }
   readonly actor: Actor<typeof channelMachine>
   readonly joinPush = new Reply()
-  /** This channel's durable messages to the server, when it was opened with `durable`. */
   readonly log: Log | null
   timeout: number
   private readonly params: () => Params
@@ -84,7 +68,7 @@ export class Channel {
     readonly topic: string,
     params: Params | (() => Params) = {},
     readonly socket: ChannelSocket,
-    options: ChannelOptions,
+    options: ChannelOptions = {},
   ) {
     this.params = typeof params === "function" ? params : () => params
     this.timeout = socket.timeout
@@ -101,9 +85,7 @@ export class Channel {
                   ...decodeSyncReply(response),
                 }),
               )
-              // PhoenixDurableChannel.Channel always answers "ok"; no answer means a slow server or a lost connection.
               .receive("timeout", () => this.log?.actor.send({ type: "SYNC_FAILED" })),
-          // The log sends only while joined, and sends again after every join.
           send: ({ event, payload, ref, number }) =>
             socket.push({
               topic,
@@ -180,12 +162,6 @@ export class Channel {
     return leavePush
   }
 
-  /**
-   * Fire and forget, as phoenix.js: answered "ok", "error" or "timeout". With
-   * `{ durable: true }`: numbered, sent again after every rejoin until the server answers,
-   * and handled by the server once and in order; answered "ok" or "error", or "timeout"
-   * only when the channel closes first.
-   */
   push(event: string, payload?: unknown, timeout?: number): Push
   push(event: string, payload: unknown, options: { durable: true }): Reply
   push(
@@ -203,7 +179,6 @@ export class Channel {
         throw new Error(
           `tried to push a durable '${event}' to '${this.topic}', which was not opened with { durable: true }`,
         )
-      // The binary frame has no slot for the number.
       if (payload instanceof ArrayBuffer)
         throw new Error(`tried to push a durable '${event}' with a binary payload`)
       const reply = new Reply()
@@ -243,7 +218,6 @@ export class Channel {
     return this.on(CHANNEL_EVENTS.error, callback)
   }
 
-  /** Overridable: transforms a payload before the bindings see it. */
   onMessage(
     _event: string,
     payload: unknown,
@@ -266,7 +240,6 @@ export class Channel {
     return true
   }
 
-  /** Called by the socket for each message on this channel's topic and join. */
   receiveMessage(message: Message): void {
     const { event, payload, ref, join_ref, number } = message
     switch (event) {
@@ -280,14 +253,12 @@ export class Channel {
         this.actor.send({ type: "SERVER_CLOSE", reason: payload })
         break
       default:
-        // A durable message goes to the read in progress, which delivers it in order.
         if (this.log && number !== undefined)
           for (const listener of this.listeners) listener.message({ number, event, payload })
         else this.trigger(event, payload, ref, join_ref)
     }
   }
 
-  /** Called by the socket when its connection opens or closes. */
   socketOpened(): void {
     this.actor.send({ type: "SOCKET_OPEN" })
   }
@@ -362,7 +333,6 @@ export class Channel {
           this.socket.push({
             topic: this.topic,
             event: CHANNEL_EVENTS.join,
-            // Tells PhoenixDurableChannel.Channel to send this client its durable messages.
             payload: options.durable ? { ...this.params(), phx_durable: true } : this.params(),
             ref: joinRef,
             join_ref: joinRef,
@@ -382,7 +352,6 @@ export class Channel {
       answerLeave: (status) => later(() => this.leavePush.answer(status, {})),
       joined: () =>
         later(() => {
-          // Every push still here is buffered: leaving `joined` timed out the sent ones.
           for (const push of this.pushes) this.send(push)
           this.log?.actor.send({ type: "CHANNEL_JOINED" })
         }),
@@ -398,16 +367,13 @@ export class Channel {
           Effect.async<PublishedReader, string>((resume) => {
             this.push(CHANNEL_EVENTS.reader)
               .receive("ok", (response) => resume(Effect.succeed(decodePublishedReader(response))))
-              // PhoenixDurableChannel.Channel always answers "ok".
               .receive("timeout", () => resume(Effect.fail("timeout")))
           }),
         ),
       after: options.after ?? null,
-      // The reader defers its deliveries itself; this channel's effects run only when its own state changes.
       deliver: (message) => this.trigger(message.event, message.payload),
       connectionLost: () =>
         later(() => {
-          // First, so the log and the read are done with this connection before its pushes time out.
           this.log?.actor.send({ type: "CHANNEL_LEFT" })
           for (const listener of this.listeners) listener.lost()
           for (const push of this.pushes)

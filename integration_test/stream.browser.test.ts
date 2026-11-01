@@ -1,6 +1,11 @@
 import { expect, inject, test } from "vitest"
 import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
-import { DurableStream, S2Stream, type PublishedReader, type StreamMessage } from "../assets/js/phoenix_durable_channel/stream"
+import {
+  DurableStream,
+  S2Stream,
+  type PublishedReader,
+  type StreamMessage,
+} from "../assets/js/phoenix_durable_channel/stream"
 import { answer, join, openSocket, waitFor } from "./support/helpers"
 
 const s2Url = inject("s2Url")
@@ -12,7 +17,6 @@ function durableTopic(name: string): string {
   return `durable:${name}:${Math.random().toString(36).slice(2)}`
 }
 
-/** Writes to S2 as the server would, without it. Appending creates the stream. */
 async function appendToS2(stream: string, bodies: Array<string>): Promise<void> {
   const records = bodies.map((body) => ({
     body: JSON.stringify({ event: "update", payload: { body } }),
@@ -69,11 +73,9 @@ test("the server names S2 in its join reply, and the channel reads its durable m
   await publish(channel, "two")
   await publish(channel, "three")
   await waitFor(() => seen.length === 3)
-  // Phoenix does not push them as well: each arrives once.
   await pause(200)
   expect(seen).toEqual(["one", "two", "three"])
 
-  // Leaving stops the read.
   await answer(channel.leave())
   await appendToS2(topic, ["four"])
   await pause(300)
@@ -105,8 +107,6 @@ test("a read that ends is read again, after a backoff, from the last message del
   await publish(channel, "one")
   await waitFor(() => seen.length === 1)
 
-  // Deleting the stream writes a trim command record, which is not a message, then ends
-  // the read with an error. The next read starts after "one".
   await deleteS2Stream(topic)
   await pause(300)
   await appendToS2(topic, ["one again", "two"])
@@ -174,7 +174,6 @@ test("while the store cannot be reached, the channel keeps trying and stays join
   expect(channel.state).toBe("joined")
 })
 
-/** Signs a JWT for the test project, as another server node holding its secret would. */
 async function durableStreamsToken(scope: string, stream: string): Promise<string> {
   const encode = (bytes: Uint8Array) =>
     btoa(String.fromCharCode(...bytes))
@@ -218,7 +217,6 @@ test("the server names a Durable Streams store, and a node whose next number ano
   await publish(channel, "two")
   await waitFor(() => seen.length === 2)
 
-  // Another node, which read the stream after this one, appends message 3.
   const response = await fetch(String(reader["url"]), {
     method: "POST",
     headers: {
@@ -235,7 +233,6 @@ test("the server names a Durable Streams store, and a node whose next number ano
   expect(response.ok).toBe(true)
   await waitFor(() => seen.length === 3)
 
-  // This node's append of 3 is refused; it reads on, and numbers the message 4.
   await publish(channel, "four")
   await waitFor(() => seen.length === 4)
   await pause(200)

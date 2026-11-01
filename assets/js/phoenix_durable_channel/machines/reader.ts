@@ -8,7 +8,6 @@ type ReaderEvent =
   | { type: "FAILED" }
   | { type: "STOP" }
 
-/** One read, alive exactly as long as the state that invoked it. */
 const reading = fromCallback<ReaderEvent, { stream: MessageStream; from: Position }, ReaderEvent>(
   ({ input, sendBack }) =>
     input.stream.read(input.from, {
@@ -23,16 +22,10 @@ export interface ReaderContext {
   deliver(message: StreamMessage): void
   backoffMs(tries: number): number
   from: Position
-  // Where the reader got to in each epoch it has left, so going back to one reads on.
   left: ReadonlyMap<string, number>
   tries: number
 }
 
-/**
- * Follows a stream: delivers each message once and in order, and after a read ends
- * reads again, after a backoff, from the last message delivered. When the store's epoch
- * changes it reads the new one from where it got to in it before, or from the start.
- */
 export const readerMachine = setup({
   types: {
     context: {} as ReaderContext,
@@ -55,7 +48,6 @@ export const readerMachine = setup({
         }),
       },
       on: {
-        // A read delivers in order from `from`, and a stopped read sends nothing more.
         MESSAGE: {
           actions: assign(({ context, event }) => {
             context.deliver(event.message)

@@ -1,6 +1,3 @@
-// How the /statechart skill draws PhoenixDurableChannel.tla: one region for the connection and one for
-// the channel, in the words of someone using the app.
-
 type Vars = { conn: string; chan: string }
 
 const connection: Record<string, string> = {

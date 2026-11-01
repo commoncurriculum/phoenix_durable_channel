@@ -1,9 +1,3 @@
-// The Jepsen test's clients: real phoenix-durable-channel sockets in Chromium (page.ts), driven over
-// HTTP. Each WebSocket goes through a proxy that sends every new connection to a random node,
-// as a load balancer would, so a session that reconnects can land on another node.
-//
-// Usage: node driver.mjs <http port> <proxy port> <node host:port,...>
-
 import { createServer as createHttpServer } from "node:http"
 import { createRequire } from "node:module"
 import { connect, createServer as createTcpServer } from "node:net"
@@ -26,7 +20,6 @@ createTcpServer((client) => {
   upstream.on("close", () => client.destroy())
 }).listen(Number(proxyPort), "127.0.0.1")
 
-// Vitest's own Vite bundles the page, so the driver needs no dependency of its own.
 const require = createRequire(createRequire(import.meta.url).resolve("vitest/package.json"))
 const { build } = await import(require.resolve("vite"))
 const bundle = await build({

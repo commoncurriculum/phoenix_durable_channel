@@ -35,7 +35,6 @@ test("opens, reports, disconnects and connects again", async () => {
   expect(events).toEqual(["open", "message phx_reply", "close 1000"])
   await waitFor(() => channel.state === "errored")
 
-  // Buffered while closed, sent once the socket opens again.
   expect(socket.ping(() => {})).toBe(false)
   const replies: Array<string | null> = []
   socket.onMessage((message) => replies.push(message.ref))
@@ -52,7 +51,6 @@ test("opens, reports, disconnects and connects again", async () => {
   socket.connect()
   await waitFor(() => channel.state === "joined")
   expect(replies).toContain("x")
-  // Two pings at once: each answers only to its own reply.
   const first = new Promise<number>((resolve) => socket.ping(resolve))
   const latency = await new Promise<number>((resolve) => expect(socket.ping(resolve)).toBe(true))
   expect(latency).toBeGreaterThanOrEqual(0)
@@ -98,7 +96,6 @@ test("replaceTransport closes the connection and the next connect uses the new t
 
 test("reconnects after every close it did not ask for, whatever the code", async () => {
   const fast = { reconnectAfterMs: () => 10, rejoinAfterMs: () => 10 }
-  // The server closes an idle socket with 1000, which phoenix.js 1.7 takes as final.
   const idle = openSocket("/idle_socket", fast)
   const idleCloses: Array<CloseDetails> = []
   idle.onClose((event) => idleCloses.push(event))
@@ -118,14 +115,12 @@ test("reconnects after every close it did not ask for, whatever the code", async
   const channel = socket.channel(topic("reconnect"))
   await join(channel)
 
-  // A deploy drains sockets with 1012.
   const inFlight = channel.push("noreply", {}, 10_000)
   channel.push("drain")
   expect((await answer(inFlight)).status).toBe("timeout")
   await waitFor(() => closes.length === 1 && socket.isConnected() && channel.state === "joined")
   expect(closes[0]?.code).toBe(1012)
 
-  // Phoenix's "disconnect" broadcast to the socket's id.
   channel.push("disconnect_socket")
   await waitFor(() => closes.length === 2 && socket.isConnected() && channel.state === "joined")
   expect(await answer(channel.push("joins"))).toMatchObject({

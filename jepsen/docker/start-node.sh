@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Runs phoenix_app/ on this node as jepsen@<hostname>, with the mounted checkout and mise tools.
-# Usage: start-node.sh <port> <store: mongo, s2 or durable-streams> <peer node names, comma separated>
 set -euo pipefail
 "$(dirname "$0")/forward-databases.sh"
 elixir="$MISE_INSTALLS/elixir/1.17.3-otp-25"

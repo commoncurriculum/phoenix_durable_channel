@@ -14,30 +14,16 @@ import {
   decodeStreamBody,
 } from "./wire"
 
-/** A durable message from the server, numbered from 1 in the order the server sent it. */
 export interface StreamMessage {
   number: number
   event: string
   payload: unknown
 }
 
-/**
- * Where a channel reads the server's durable messages, instead of from Phoenix. The server
- * writes them there; the client reads them with that system's own protocol, so they never
- * pass through the Phoenix server.
- */
 export interface MessageStream {
-  /**
-   * Calls `deliver` with each message numbered after `from.after`, in order. Calls `failed`
-   * once if the read ends. The returned function stops the read.
-   */
   read(from: Position, callbacks: ReadCallbacks): () => void
 }
 
-/**
- * Where a read starts: after message `after` of `epoch`, the store's numbering. A store
- * that never numbers afresh has one epoch, `""`.
- */
 export interface Position {
   after: number
   epoch: string
@@ -45,23 +31,12 @@ export interface Position {
 
 export interface ReadCallbacks {
   deliver(message: StreamMessage): void
-  /** The store numbers its messages afresh, as `epoch`, so the next read reads that one. */
   moved(epoch: string): void
   failed(error: unknown): void
 }
 
-/**
- * A read token, or null to read without one. Called for every read, so it may be
- * refreshed.
- */
 export type Token = () => string | null | Promise<string | null>
 
-/**
- * What a join reply's `phx_reader` says about where to read the channel's durable
- * messages: `type` names the store, `last` is the number of its last message at the
- * join, `epoch` its numbering when it can number afresh, and the rest is that store's
- * address and token.
- */
 export interface PublishedReader {
   readonly type: string
   readonly last: number
@@ -69,17 +44,11 @@ export interface PublishedReader {
   readonly [key: string]: unknown
 }
 
-/**
- * Makes the stream for one `type` of `PublishedReader`. `latest` is what the server
- * published last, so a read after a rejoin uses the newest token. `refresh` asks the
- * server for a fresh one, for a store that refused the token it has.
- */
 export type ReaderFactory = (
   latest: () => PublishedReader,
   refresh: () => Promise<void>,
 ) => MessageStream
 
-/** The stores the client reads without being told how, besides `"phoenix"`, the channel itself. */
 export const builtInReaders: Record<string, ReaderFactory> = {
   s2: (latest, refresh) => {
     const { endpoint, basin, stream } = decodeS2Reader(latest())
@@ -103,33 +72,22 @@ export const builtInReaders: Record<string, ReaderFactory> = {
 }
 
 export interface S2StreamOptions {
-  /** Such as `https://{basin}.b.aws.s2.dev`, or S2 Lite's `http://localhost:4243`. */
   endpoint: string
   basin: string
   stream: string
-  /** A token that can read this stream; S2 Lite reads without one. */
   token?: Token
-  /** Called when S2 refuses the token (it expired), before the next read asks for one. */
   refused?: () => Promise<void>
 }
 
 export interface DurableStreamOptions {
-  /** The stream's URL, such as `https://streams.example.workers.dev/v1/stream/project/name`. */
   url: string
-  /** A read-scoped JWT for this stream. */
   token?: Token
-  /** Called when the server refuses the token (it expired), before the next read asks for one. */
   refused?: () => Promise<void>
-  /** Where message `number` ends, so a read after it starts there. */
   resume?: { number: number; offset: string }
 }
 
 const unchanged = (error: unknown) => error
 
-/**
- * Fetches `url` as server-sent events and runs `handle` on each, until the read ends or the
- * returned function stops it. `failed` is called once when it ends.
- */
 function readEvents(
   url: string,
   headers: Record<string, string>,
@@ -168,7 +126,6 @@ function readEvents(
   }
 }
 
-/** Server-sent events from a response body: each event's name and data. */
 function serverSentEvents(body: ReadableStream<Uint8Array>) {
   return EffectStream.fromReadableStream(() => body, unchanged).pipe(
     EffectStream.decodeText(),
@@ -184,18 +141,12 @@ function serverSentEvents(body: ReadableStream<Uint8Array>) {
   )
 }
 
-/**
- * An S2 stream, read with S2's server-sent events. Each record's body is the JSON
- * `{ event, payload }`; record `seq_num` n is message number n + 1.
- */
 export class S2Stream implements MessageStream {
   constructor(readonly options: S2StreamOptions) {}
 
   read(from: Position, callbacks: ReadCallbacks): () => void {
     const { endpoint, stream, basin, token, refused } = this.options
     const url = `${endpoint.replace("{basin}", basin)}/v1/streams/${encodeURIComponent(stream)}/records?seq_num=${from.after}`
-    // S2 Lite reads the basin from this header; hosted S2 from the endpoint. A read ends
-    // after S2 sends an error event, so the error needs no handling of its own.
     return readEvents(
       url,
       { "s2-basin": basin },
@@ -206,7 +157,6 @@ export class S2Stream implements MessageStream {
           if (event.event !== "batch") return Effect.void
           return Effect.sync(() => {
             for (const record of decodeS2Batch(event.data).records) {
-              // A command record, such as the trim that deleting the stream writes.
               if (record.headers[0]?.[0] === "") continue
               const { event: name, payload } = decodeStreamBody(record.body)
               callbacks.deliver({
@@ -222,12 +172,6 @@ export class S2Stream implements MessageStream {
   }
 }
 
-/**
- * A JSON stream on a Durable Streams server, read with the protocol's `live=sse`. Offsets
- * are opaque, so each message carries its number: `{ number, event, payload }`. The stream
- * keeps where the last message it delivered ends, so the read after it starts there; any
- * other read starts at the beginning and skips what came before.
- */
 export class DurableStream implements MessageStream {
   private resume: { number: number; offset: string } | null
 
@@ -251,7 +195,6 @@ export class DurableStream implements MessageStream {
               this.resume = { number: last, offset: streamNextOffset }
               return last
             }
-            // The protocol's only other event is `data`.
             let delivered = last
             for (const message of decodeDurableStreamsData(event.data)) {
               if (message.number <= delivered) continue
@@ -266,14 +209,8 @@ export class DurableStream implements MessageStream {
   }
 }
 
-/** What a read through the channel needs from it. */
 export interface ChannelReads {
-  /**
-   * Sends `phx_read`, with no timeout: the server sends again what followed `after`, then
-   * replies with `{ sent, epoch }`, the last number it sent and its store's numbering.
-   */
   read(after: number): Push
-  /** Gives `listener` the channel's durable messages, and its losing the server, until the returned function is called. */
   listen(listener: ChannelListener): () => void
 }
 
@@ -282,7 +219,6 @@ export interface ChannelListener {
   lost(): void
 }
 
-/** The store `"phoenix"` names: the server keeps the messages, and sends them on the channel. */
 export class ChannelStream implements MessageStream {
   constructor(private readonly channel: ChannelReads) {}
 
@@ -295,7 +231,6 @@ export class ChannelStream implements MessageStream {
         failed: (error) => later(() => callbacks.failed(error)),
       },
     }))
-    // The read's reply can come after the read was stopped.
     const send = (event: EventFromLogic<typeof channelReadMachine>) => {
       if (actor.getSnapshot().status === "active") actor.send(event)
     }
@@ -306,8 +241,6 @@ export class ChannelStream implements MessageStream {
     this.channel
       .read(from.after)
       .receive("ok", (response) => send({ type: "READ_REPLY", ...decodeReadReply(response) }))
-      // PhoenixDurableChannel.Channel always answers "ok", and the read has no timer: "timeout" is a
-      // lost connection or a closed channel.
       .receive("timeout", () => send({ type: "LOST" }))
     return () => {
       stopListening()
@@ -316,7 +249,6 @@ export class ChannelStream implements MessageStream {
   }
 }
 
-/** Reads a channel's durable messages from a stream; see `readerMachine`. */
 export class Reader {
   readonly actor: Actor<typeof readerMachine>
 

@@ -1,26 +1,10 @@
 defmodule PhoenixDurableChannel.Stream.Mongo do
-  @moduledoc """
-  A `PhoenixDurableChannel.Stream`, read through the channel, and a `PhoenixDurableChannel.Ledger`, in
-  MongoDB.
-
-  Each message is a document `{topic, number, event, payload}` in the `messages` collection,
-  and each reply to the client's durable messages `{topic, number, status, response}` in
-  `replies`. Both have a unique index on `{topic, number}`, which `create_indexes/0` makes:
-  the index takes the number, so two appends never get the same one. Mongo keeps what it
-  has, so the epoch never changes.
-
-      config :phoenix_durable_channel, PhoenixDurableChannel.Stream.Mongo,
-        name: MyApp.Mongo,                 # a `Mongo` topology
-        messages: "phoenix_durable_channel_messages",
-        replies: "phoenix_durable_channel_replies"
-  """
   @behaviour PhoenixDurableChannel.Ledger
   @behaviour PhoenixDurableChannel.Stream
   @behaviour PhoenixDurableChannel.Stream.ThroughChannel
 
   @epoch "mongo"
 
-  @doc "Makes the unique `{topic, number}` index on both collections."
   def create_indexes do
     Enum.each([config()[:messages], config()[:replies]], fn collection ->
       :ok =
@@ -30,7 +14,6 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
     end)
   end
 
-  @doc "The number of the last document of `topic` in `collection`, 0 for none."
   def last(collection, topic) do
     document =
       Mongo.find_one(config()[:name], collection, %{topic: topic},
@@ -84,7 +67,6 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
   @impl PhoenixDurableChannel.Ledger
   def received(socket), do: last(config()[:replies], socket.topic)
 
-  # The unique index refuses a number already recorded, which changes nothing.
   @impl PhoenixDurableChannel.Ledger
   def put_received(socket, number, {status, response}) do
     document = %{topic: socket.topic, number: number, status: status, response: response}

@@ -24,7 +24,6 @@ defmodule TestServer.Application do
 end
 
 defmodule TestServer.Joins do
-  # Counts joins per topic, so a test can see how many times the client joined.
   use Agent
 
   def start_link(_), do: Agent.start_link(fn -> %{} end, name: __MODULE__)
@@ -46,32 +45,25 @@ end
 defmodule TestServer.Endpoint do
   use Phoenix.Endpoint, otp_app: :test_server
 
-  # The tests run in Chromium on another port, so origins are not checked. Every socket uses
-  # the library's serializer, so plain frames are tested through it too.
   @options [check_origin: false, serializer: [{PhoenixDurableChannel.Serializer, "~> 2.0.0"}]]
 
   socket("/socket", TestServer.UserSocket,
     websocket: [timeout: 45_000] ++ @options,
-    # A poll is held at most this long, so a poll on a killed session ends quickly.
     longpoll: [window_ms: 1_000] ++ @options
   )
 
-  # Cowboy closes an idle WebSocket with code 1000; this socket goes idle after 1 s.
   socket("/idle_socket", TestServer.UserSocket,
     websocket: [timeout: 1_000] ++ @options,
     longpoll: false
   )
 
-  # Refuses WebSocket, so a client has to fall back to LongPoll.
   socket("/longpoll_only", TestServer.UserSocket, websocket: false, longpoll: @options)
 
-  # Has LongPoll, and a WebSocket path that never answers (see `health`).
   socket("/hang", TestServer.UserSocket,
     websocket: false,
     longpoll: [window_ms: 1_000] ++ @options
   )
 
-  # A plain HTTP 200 the tests use to tell the server is up.
   plug(:health)
 
   def health(%{request_path: "/hang/websocket"}, _opts), do: Process.sleep(:infinity)
@@ -144,14 +136,11 @@ defmodule TestServer.RoomChannel do
   def handle_in("crash", _payload, _socket), do: raise("crash requested by the test")
   def handle_in("stop_channel", _payload, socket), do: {:stop, :normal, socket}
 
-  # Phoenix's drainer sends this; the socket closes with code 1012.
   def handle_in("drain", _payload, socket) do
     send(socket.transport_pid, :socket_drain)
     {:noreply, socket}
   end
 
-  # Kills the process behind this connection: the WebSocket process, or the LongPoll
-  # session, as a crashed node would.
   def handle_in("kill_transport", _payload, socket) do
     Process.exit(socket.transport_pid, :kill)
     {:noreply, socket}
@@ -160,7 +149,6 @@ defmodule TestServer.RoomChannel do
   def handle_in("echo_binary", {:binary, data}, socket),
     do: {:reply, {:ok, {:binary, data}}, socket}
 
-  # LongPoll carries client binaries as base64 but cannot carry server binaries back.
   def handle_in("binary_size", {:binary, data}, socket),
     do: {:reply, {:ok, %{size: byte_size(data)}}, socket}
 
@@ -174,7 +162,6 @@ defmodule TestServer.RoomChannel do
     {:reply, :ok, socket}
   end
 
-  # The "disconnect" broadcast Phoenix documents for logging a user out of every socket.
   def handle_in("disconnect_socket", _payload, socket) do
     TestServer.Endpoint.broadcast(socket.id, "disconnect", %{})
     {:noreply, socket}
@@ -208,8 +195,6 @@ defmodule TestServer.PresenceChannel do
 end
 
 defmodule TestServer.Ledger do
-  # A PhoenixDurableChannel.Ledger and PhoenixDurableChannel.Stream kept in memory, per topic, that tests
-  # can make forget, reset or answer slowly.
   @behaviour PhoenixDurableChannel.Ledger
   @behaviour PhoenixDurableChannel.Stream
   @behaviour PhoenixDurableChannel.Stream.ThroughChannel
@@ -245,7 +230,6 @@ defmodule TestServer.Ledger do
     end)
   end
 
-  # On a "durable:slow_read…" topic the first read answers late, so the client can leave first.
   @impl true
   def since(socket, number, limit) do
     if String.starts_with?(socket.topic, "durable:slow_read") and
@@ -264,7 +248,6 @@ defmodule TestServer.Ledger do
     %{messages: messages, sent: sent, latest: latest, epoch: ledger.epoch}
   end
 
-  # On a "durable:slow_sync…" topic the first sync answers late, so the client's sync times out.
   @impl true
   def received(socket) do
     if String.starts_with?(socket.topic, "durable:slow_sync") and
@@ -295,25 +278,19 @@ defmodule TestServer.Ledger do
     %{type: "phoenix", last: length(ledger.sent), epoch: ledger.epoch}
   end
 
-  # Drops every message kept so far, as a ledger that prunes old entries would.
   def forget(topic),
     do: update(topic, fn ledger -> {:ok, %{ledger | forgotten: length(ledger.sent)}} end)
 
-  # Loses everything and numbers from 1 again, as another node's memory, or this one's after
-  # a restart, would.
   def reset(topic) do
     epoch = Integer.to_string(System.unique_integer([:positive]))
     update(topic, fn ledger -> {:ok, %{@empty | epoch: epoch, previous: ledger}} end)
   end
 
-  # Back to what was kept before the reset, as the first node's memory.
   def restore(topic), do: update(topic, fn ledger -> {:ok, ledger.previous} end)
 
-  # Counts the "slow" actions handled, so a test can tell one that ran twice.
   def handled(topic),
     do: update(topic, fn ledger -> {:ok, %{ledger | handled: ledger.handled + 1}} end)
 
-  # True the first time it is asked for a topic and key only.
   def first_time?(topic, key) do
     update(topic, fn ledger ->
       {not MapSet.member?(ledger.used, key), %{ledger | used: MapSet.put(ledger.used, key)}}
@@ -322,7 +299,6 @@ defmodule TestServer.Ledger do
 end
 
 defmodule TestServer.Elsewhere do
-  # A store the client has no built-in reader for: S2, published as type "elsewhere".
   @behaviour PhoenixDurableChannel.Stream
 
   @impl true
@@ -339,8 +315,6 @@ defmodule TestServer.Elsewhere do
 end
 
 defmodule TestServer.ExpiringDurableStreams do
-  # Durable Streams whose join gives a read token that already expired. The first fresh
-  # one is slow to come, so the client's request for it times out.
   @behaviour PhoenixDurableChannel.Stream
   alias PhoenixDurableChannel.Stream.DurableStreams
 
@@ -366,8 +340,6 @@ defmodule TestServer.ExpiringDurableStreams do
 end
 
 defmodule TestServer.UpgradingChannel do
-  # A topic served as a deploy from before PhoenixDurableChannel would serve it, joined without a
-  # reader, until a room's "upgrade" says the deploy is done; then as TestServer.DurableChannel.
   use Phoenix.Channel
 
   @impl true
@@ -414,10 +386,8 @@ defmodule TestServer.DurableChannel do
              "elsewhere" => TestServer.Elsewhere
            })
 
-  # The stream the join's `stream` param names: TestServer.Ledger by default.
   def durable_stream(socket), do: Map.get(@streams, socket.assigns[:stream], Ledger)
 
-  # The ledger the join's `ledger` param names: TestServer.Ledger by default.
   def durable_ledger(socket), do: Map.get(@stores, socket.assigns[:ledger], Ledger)
 
   @impl true
@@ -426,7 +396,6 @@ defmodule TestServer.DurableChannel do
     {:ok, assign(socket, stream: params["stream"], ledger: params["ledger"])}
   end
 
-  # Sent right after the join reply, so it reaches the client before its first read's reply.
   @impl true
   def handle_info(:greet, socket) do
     push_durable(socket, "update", %{body: "welcome"})
@@ -439,7 +408,6 @@ defmodule TestServer.DurableChannel do
     {:reply, :ok, socket}
   end
 
-  # Kept and numbered, but not sent: the client only gets it by asking.
   def handle_in("publish_silently", %{"body" => body}, socket) do
     {:reply, {:ok, %{number: Ledger.append(socket, "update", %{body: body})}}, socket}
   end
@@ -465,7 +433,7 @@ defmodule TestServer.DurableChannel do
   end
 
   def handle_in("durable", _payload, socket),
-    do: {:reply, {:ok, %{durable: socket.assigns.phx_durable}}, socket}
+    do: {:reply, {:ok, %{durable: Map.get(socket.assigns, :phx_durable, false)}}, socket}
 
   def handle_in("ledger", _payload, socket) do
     ledger = Ledger.get(socket.topic)
@@ -476,7 +444,6 @@ defmodule TestServer.DurableChannel do
     {:reply, {:ok, %{handled: Ledger.get(socket.topic).handled}}, socket}
   end
 
-  # Kills this connection, as a crashed node would.
   def handle_in("kill_transport", _payload, socket) do
     Process.exit(socket.transport_pid, :kill)
     {:noreply, socket}
@@ -488,26 +455,22 @@ defmodule TestServer.DurableChannel do
   def handle_in("action", %{"body" => "quiet"}, socket), do: {:noreply, socket}
   def handle_in("action", %{"body" => "crash"}, _socket), do: raise("crash requested by the test")
 
-  # Handled, then the connection dies before the reply goes out. The resend is historic.
   def handle_in("action", %{"body" => "lose_reply"}, socket) do
     Process.exit(socket.transport_pid, :kill)
     {:noreply, socket}
   end
 
-  # Not taken the first time, as with a database that is briefly down.
   def handle_in("action", %{"body" => "busy_once"} = action, socket) do
     if Ledger.first_time?(socket.topic, :busy_once),
       do: {:retry, "busy", socket},
       else: {:reply, {:ok, action}, socket}
   end
 
-  # Refused, then the connection dies before the refusal goes out. The resend gets it.
   def handle_in("action", %{"body" => "refuse_and_lose"}, socket) do
     Process.exit(socket.transport_pid, :kill)
     {:reply, {:error, %{reason: "refused"}}, socket}
   end
 
-  # Slow, so the client's connection can drop while this process still runs it.
   def handle_in("action", %{"body" => "slow"} = action, socket) do
     Process.sleep(500)
     Ledger.handled(socket.topic)

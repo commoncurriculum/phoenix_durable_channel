@@ -4,7 +4,6 @@ import { sleep, type CloseDetails } from "../actors"
 import { appendParams } from "../url"
 import { decodePollResponse } from "../wire"
 
-// Phoenix puts a token on the opening 410 and on a 200, the answers this keeps it from.
 interface PollResponse {
   status: number | "timeout"
   token: string | null
@@ -21,9 +20,6 @@ interface RequestInput {
   timeout: number
 }
 
-/**
- * One GET or POST to the long-poll endpoint. A network failure is Phoenix's status 0.
- */
 const request = fromPromise<PollResponse, RequestInput>(({ input, signal }) =>
   Effect.runPromise(
     Effect.tryPromise((signal) =>
@@ -34,10 +30,10 @@ const request = fromPromise<PollResponse, RequestInput>(({ input, signal }) =>
         headers: {
           "Content-Type": input.method === "GET" ? "application/json" : "application/x-ndjson",
         },
-      })
-        .then((response) => response.json())
-        .then(decodePollResponse),
+      }),
     ).pipe(
+      Effect.flatMap((response) => Effect.tryPromise(() => response.json())),
+      Effect.flatMap((body) => Effect.try(() => decodePollResponse(body))),
       Effect.timeoutTo({
         duration: input.timeout,
         onSuccess: (response) => response,
@@ -61,7 +57,6 @@ export interface LongPollHooks {
 interface LongPollContext {
   hooks: LongPollHooks
   token: string | null
-  // Frames pushed since the last POST went out, and the frames that POST carries.
   batch: Array<string>
   sending: Array<string>
 }
@@ -89,7 +84,6 @@ const pollFailures: Record<string, Failure> = {
   403: { code: 1008, reason: "forbidden" },
 }
 
-// A POST is answered 200, or the connection fails.
 const publishFailures: Record<string, Failure> = {
   timeout: { code: 1005, reason: "timeout" },
 }
@@ -147,7 +141,6 @@ export const longPollMachine = setup({
     },
   },
   states: {
-    // The socket sets `timeout` and the handlers after construction.
     starting: {
       invoke: { src: "sleep", input: { ms: 0 }, onDone: "running" },
     },
@@ -262,7 +255,6 @@ export const longPollMachine = setup({
                 },
               },
             },
-            // Frames pushed in the same turn of the event loop go out in one POST.
             gathering: {
               invoke: { src: "sleep", input: { ms: 0 }, onDone: "sending" },
             },

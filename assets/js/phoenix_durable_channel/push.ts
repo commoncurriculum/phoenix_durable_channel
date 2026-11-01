@@ -15,7 +15,6 @@ function pushState(snapshot: SnapshotFrom<typeof pushMachine>): PushState {
   return "timeout"
 }
 
-/** What `channel.push(...)` returns: `.receive("ok" | "error" | "timeout", callback)`. */
 export class Push {
   readonly status: { state: PushState }
   readonly actor: Actor<typeof pushMachine>

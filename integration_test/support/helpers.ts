@@ -6,7 +6,6 @@ import { Socket, type SocketOptions } from "../../assets/js/phoenix_durable_chan
 
 export const phoenixUrl = inject("phoenixUrl")
 
-/** A socket on the test server, disconnected when the test finishes. */
 export function openSocket(path = "/socket", options: SocketOptions = {}): Socket {
   const socket = new Socket(`${phoenixUrl}${path}`, options)
   onTestFinished(() => new Promise<void>((resolve) => socket.disconnect(resolve)))

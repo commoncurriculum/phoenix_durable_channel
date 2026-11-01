@@ -1,6 +1,5 @@
 import Config
 
-# docker/start-node.sh sets these on each node.
 config :jepsen_server, JepsenServer.Endpoint,
   http: [ip: {0, 0, 0, 0}, port: String.to_integer(System.fetch_env!("PORT"))]
 

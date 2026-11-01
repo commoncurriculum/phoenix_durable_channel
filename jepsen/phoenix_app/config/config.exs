@@ -9,8 +9,6 @@ config :jepsen_server, JepsenServer.Endpoint,
 config :phoenix, :json_library, Jason
 config :logger, level: :info
 
-# The stores, from docker/compose.yml. S2 Lite and the Durable Streams worker are at the
-# same address on the nodes and on the host, where the clients read them.
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.Mongo,
   name: JepsenServer.Mongo,
   messages: "messages",

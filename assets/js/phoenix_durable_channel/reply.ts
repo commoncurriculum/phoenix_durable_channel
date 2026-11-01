@@ -2,10 +2,6 @@ import type { ReplyStatus } from "./push"
 
 type ReceiveHook = (response: unknown) => void
 
-/**
- * What `channel.join()` and `channel.leave()` return. Unlike a push, a join is answered
- * again on every rejoin, so its hooks stay registered and run on each answer.
- */
 export class Reply {
   private last: { status: ReplyStatus; response: unknown } | null = null
   private readonly hooks: Array<{

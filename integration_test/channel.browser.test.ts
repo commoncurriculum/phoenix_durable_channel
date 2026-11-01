@@ -15,7 +15,6 @@ test("joins, pushes and receives over a real Phoenix server", async () => {
   const joinPush = channel.join()
   expect(() => channel.join()).toThrow("tried to join multiple times")
   expect(channel.isJoining()).toBe(true)
-  // Pushed while joining: these wait, then go out before the join's own "ok" callbacks.
   const order: Array<string> = []
   const early = channel.push("echo", { early: true })
   early.receive("ok", () => order.push("early reply"))
@@ -41,7 +40,6 @@ test("joins, pushes and receives over a real Phoenix server", async () => {
     response: { early: true },
   })
   expect(order).toEqual(["join ok, early push sent", "early reply"])
-  // A hook added after the answer runs at once; one for another status never does.
   const late: Array<unknown> = []
   early.receive("ok", (response) => late.push(response)).receive("error", () => late.push("never"))
   joinPush.receive("ok", (response) => late.push(response))
@@ -69,7 +67,6 @@ test("joins, pushes and receives over a real Phoenix server", async () => {
   channel.push("push_to_self", { d: 4 })
   expect(await pushed).toEqual({ d: 4 })
 
-  // `off` with no ref removes every binding for the event.
   const seen: Array<unknown> = []
   channel.on("pushed", (payload) => seen.push(payload))
   channel.on("pushed", (payload) => seen.push(payload))
@@ -77,7 +74,6 @@ test("joins, pushes and receives over a real Phoenix server", async () => {
   await answer(channel.push("push_to_self", { e: 5 }))
   expect(seen).toEqual([])
 
-  // `onMessage` can be overridden to change payloads before bindings see them.
   channel.onMessage = (_event, payload) => ({ wrapped: payload })
   const wrapped = nextEvent(channel, "pushed")
   channel.push("push_to_self", { f: 6 })
@@ -140,7 +136,6 @@ test("a join that times out is left on the server, and the rejoin succeeds", asy
   sleep = 0
   await waitFor(() => channel.state === "joined")
   expect(answers.at(-1)).toBe("ok")
-  // The late "ok" for the first join never counted as this channel's join.
   expect(answers.filter((status) => status === "ok")).toHaveLength(1)
 })
 
@@ -166,7 +161,6 @@ test("a crashed channel errors, fails its in-flight pushes at once, and rejoins"
     response: { joins: 2 },
   })
 
-  // A message from the crashed join is not this join's.
   const stale = {
     topic: channel.topic,
     event: "pushed",
@@ -192,7 +186,6 @@ test("a channel the server stops is closed for good", async () => {
   expect(closes).toEqual([{}])
   expect((await answer(pending)).status).toBe("timeout")
   expect(socket.channels).not.toContain(channel)
-  // Nothing answers a push to a closed channel.
   const after = channel.push("echo", {}, 50)
   expect((await answer(after)).status).toBe("timeout")
 })
@@ -203,13 +196,11 @@ test("leaving: before joining, while joining, and when the reply does not come",
   expect((await answer(unjoined.leave())).status).toBe("ok")
   expect(unjoined.state).toBe("closed")
 
-  // Waiting for the socket to open: nothing to tell the server.
   const waiting = socket.channel(topic("waiting"))
   waiting.join()
   const buffered = waiting.push("echo", {}, 10_000)
   expect(waiting.state).toBe("joining")
   expect((await answer(waiting.leave())).status).toBe("ok")
-  // It never went out, and now it never will.
   expect((await answer(buffered)).status).toBe("timeout")
 
   socket.connect()
@@ -218,16 +209,13 @@ test("leaving: before joining, while joining, and when the reply does not come",
   expect((await answer(impatient.leave(0))).status).toBe("timeout")
   expect(impatient.state).toBe("closed")
 
-  // The connection drops before the reply: the server has dropped the channel too.
   const dropped = socket.channel(topic("dropped"))
   await join(dropped)
   const leave = dropped.leave()
-  // Leaving again while leaving is the same leave.
   expect(dropped.leave()).toBe(leave)
   socket.disconnect()
   expect((await answer(leave)).status).toBe("ok")
   expect(dropped.state).toBe("closed")
-  // Leaving a closed channel is answered at once; joining it is a mistake.
   expect((await answer(dropped.leave())).status).toBe("ok")
   expect((await answer(unjoined.leave())).status).toBe("ok")
   expect(() => unjoined.join()).toThrow("which was left or replaced")
@@ -240,7 +228,6 @@ test("a buffered push's timer starts again when it is sent", async () => {
   const buffered = channel.push("slow", { sleep: 200 }, 300)
   await new Promise((resolve) => setTimeout(resolve, 200))
   socket.connect()
-  // Sent about 200 ms in, answered about 200 ms later: past 300 ms from the push, inside it from the send.
   expect(await answer(buffered)).toEqual({
     status: "ok",
     response: { sleep: 200 },

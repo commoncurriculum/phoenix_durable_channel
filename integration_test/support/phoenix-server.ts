@@ -18,7 +18,6 @@ const environment = {
 
 let server: ChildProcess | null = null
 
-// A server still starting can take the connection and not answer it.
 function answers(url: string): Promise<boolean> {
   return fetch(url, { signal: AbortSignal.timeout(1_000) }).then(
     () => true,
@@ -44,7 +43,6 @@ async function waitUntil(ready: () => Promise<boolean>, what: string, ms: number
 const S2_PORT = 4401
 let s2: ChildProcess | null = null
 
-// S2 Lite, the in-memory S2 server from the `s2` CLI that mise installs.
 async function startS2() {
   const basins = `http://127.0.0.1:${S2_PORT}/v1/basins`
   if (!(await answers(basins))) {
@@ -67,8 +65,6 @@ async function startS2() {
 const DURABLE_STREAMS_PORT = 4402
 let durableStreams: ChildProcess | null = null
 
-// The `durable-streams-cloudflare` worker on wrangler, with a project whose tokens the test
-// app signs (integration_test/phoenix_app/config/config.exs).
 async function startDurableStreams() {
   const url = `http://127.0.0.1:${DURABLE_STREAMS_PORT}/`
   if (await answers(url)) return
@@ -102,7 +98,6 @@ function listening(port: number): Promise<boolean> {
   })
 }
 
-// MongoDB from mise, on fresh data, unless one is already on the port (CI's service).
 async function startMongo() {
   if (await listening(MONGO_PORT)) return
   const directory = mkdtempSync(join(tmpdir(), "phoenix-durable-channel-mongo-"))
@@ -119,14 +114,12 @@ export async function setup(project: TestProject) {
   project.provide("s2Url", `http://127.0.0.1:${S2_PORT}`)
   project.provide("durableStreamsUrl", `http://127.0.0.1:${DURABLE_STREAMS_PORT}`)
   await Promise.all([startS2(), startDurableStreams(), startMongo()])
-  // Vitest can call this once per project; the first call starts the server for all of them.
   if (await healthy()) return
   execFileSync("mix", ["do", "deps.get,", "compile"], {
     cwd: serverDirectory,
     env: environment,
     stdio: "inherit",
   })
-  // Its own process group, so teardown stops the BEAM that `mix` starts, not just `mix`.
   server = spawn("mix", ["run", "--no-halt"], {
     cwd: serverDirectory,
     env: environment,

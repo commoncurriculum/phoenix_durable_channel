@@ -4,7 +4,6 @@ import { startMachine } from "./actors"
 import { logMachine, type LogHooks } from "./machines/log"
 import type { Reply } from "./reply"
 
-/** A channel's durable messages to the server; see `logMachine`. `status.pending` counts the unanswered. */
 export class Log {
   readonly status: { pending: number }
   readonly actor: Actor<typeof logMachine>

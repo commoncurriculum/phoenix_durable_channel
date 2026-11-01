@@ -1,13 +1,4 @@
 defmodule PhoenixDurableChannel.Serializer do
-  @moduledoc """
-  Phoenix's V2 JSON frames, `[join_ref, ref, topic, event, payload]`, plus a sixth slot that
-  carries a durable message's number. A channel sees a durable message's payload as
-  `{:durable, number, payload}`, the way Phoenix hands it a binary one as `{:binary, data}`.
-
-      socket "/socket", MyAppWeb.UserSocket,
-        websocket: [serializer: [{PhoenixDurableChannel.Serializer, "~> 2.0.0"}]],
-        longpoll: [serializer: [{PhoenixDurableChannel.Serializer, "~> 2.0.0"}]]
-  """
   @behaviour Phoenix.Socket.Serializer
 
   alias Phoenix.Socket.Message

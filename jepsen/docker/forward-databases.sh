@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Forwards the node's 127.0.0.1 ports where phoenix_app/ finds the stores to their containers:
-# MongoDB, S2 Lite and the Durable Streams worker.
 set -euo pipefail
 for forward in 27017:mongo:27017 4251:s2:4243 4252:durable-streams:4252; do
   IFS=: read -r local host remote <<<"$forward"

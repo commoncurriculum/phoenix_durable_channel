@@ -10,7 +10,6 @@ config :test_server, TestServer.Endpoint,
 config :phoenix, :json_library, Jason
 config :logger, level: :warning
 
-# S2 Lite and the Durable Streams worker that integration_test/support/phoenix-server.ts starts.
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.S2,
   name: TestServer.S2,
   basin: "phoenix-durable-channel",

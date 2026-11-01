@@ -2,3 +2,6 @@ pnpm-lock.yaml
 coverage/
 jepsen/store/
 patches/
+deps/
+_build/
+phoenix_js_test/test/

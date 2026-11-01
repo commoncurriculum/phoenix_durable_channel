@@ -10,21 +10,12 @@ import {
 } from "xstate"
 import type { EncodedMessage } from "./serializer"
 
-/**
- * Waits `ms`, then finishes. `null` waits forever. Leaving the state that invoked it
- * aborts the signal, which interrupts the Effect fiber.
- */
 export const sleep = fromPromise<void, { ms: number | null }>(({ input, signal }) =>
   Effect.runPromise(input.ms === null ? Effect.never : Effect.sleep(input.ms), { signal }),
 )
 
 export type Later = (effect: () => void) => void
 
-/**
- * Starts `logic` with the input `input` builds. XState runs actions before it commits the
- * new snapshot, so anything an action reaches would still see the old state: hooks queue
- * their effects with `later`, and they run after `observe` has seen the new snapshot.
- */
 export function startMachine<Logic extends AnyActorLogic>(
   logic: Logic,
   input: (later: Later) => InputFrom<Logic>,
@@ -47,7 +38,6 @@ export interface CloseDetails {
   wasClean: boolean
 }
 
-/** What a transport needs to look like: a WebSocket, or the LongPoll in this package. */
 export interface TransportConnection {
   binaryType?: BinaryType
   timeout?: number
@@ -78,11 +68,6 @@ export interface TransportInput {
   timeout: number
 }
 
-/**
- * One connection, alive exactly as long as the state that invoked it. Leaving that state
- * closes the connection and detaches its handlers, so a late event from an old
- * connection can never reach the machine.
- */
 export const transport = fromCallback<TransportCommand, TransportInput, TransportEvent>(
   ({ input, sendBack, receive }) => {
     const connection = Effect.acquireRelease(
@@ -92,7 +77,6 @@ export const transport = fromCallback<TransportCommand, TransportInput, Transpor
         if ("timeout" in connection) connection.timeout = input.timeout
         connection.onopen = () => sendBack({ type: "TRANSPORT_OPEN" })
         connection.onerror = (error: unknown) => sendBack({ type: "TRANSPORT_ERROR", error })
-        // binaryType "arraybuffer" means a WebSocket hands over a string or an ArrayBuffer.
         connection.onmessage = (event: { data: EncodedMessage }) =>
           sendBack({ type: "TRANSPORT_MESSAGE", data: event.data })
         connection.onclose = (event: CloseDetails) =>

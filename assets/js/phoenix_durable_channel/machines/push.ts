@@ -7,12 +7,6 @@ type PushEvent =
   | { type: "CONNECTION_LOST" }
   | { type: "CHANNEL_CLOSED" }
 
-/**
- * One push and its one answer. It waits in `buffered` until its channel can send it,
- * then in `sent` until the reply. It ends in exactly one of `ok`, `error` or `timeout`.
- * `timeout` means "no reply will come": the timer ran out, or the connection the push
- * went out on is gone. The server may or may not have handled it.
- */
 export const pushMachine = setup({
   types: {
     context: {} as { timeout: number; ref: string | null; response: unknown },
@@ -46,7 +40,6 @@ export const pushMachine = setup({
             },
           },
         },
-        // The timer starts again on send, as in phoenix.js.
         sent: {
           invoke: {
             src: "sleep",

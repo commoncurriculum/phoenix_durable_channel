@@ -9,11 +9,10 @@ defmodule JepsenServer.MixProject do
     [mod: {JepsenServer.Application, []}, extra_applications: [:logger]]
   end
 
-  # The same Phoenix, PubSub, Cowboy and WebSockAdapter versions as integration_test/phoenix_app.
   defp deps do
     [
-      {:phoenix, "1.7.21"},
-      {:phoenix_pubsub, "2.2.0"},
+      {:phoenix, "1.8.16"},
+      {:phoenix_pubsub, "~> 2.4"},
       {:plug_cowboy, "2.7.5"},
       {:cowboy, "2.10.0", override: true},
       {:websock_adapter, "0.5.9"},

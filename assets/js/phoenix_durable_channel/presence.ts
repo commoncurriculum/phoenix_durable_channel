@@ -17,12 +17,9 @@ type OnJoin = (key: string, current: PresenceEntry | undefined, joined: Presence
 type OnLeave = (key: string, current: PresenceEntry, left: PresenceEntry) => void
 
 const clone = <T>(value: T): T => structuredClone(value)
-// Presence keys come from the server. With no prototype, a key like "toString" or
-// "__proto__" is just a key (phoenix.js 1.7 crashes on them, CVE-2026-56812).
 const presenceState = (state: PresenceState = {}): PresenceState =>
   Object.assign(Object.create(null), clone(state))
 
-/** Tracks Phoenix.Presence state on a channel, as phoenix.js's Presence does. */
 export class Presence {
   state: PresenceState = presenceState()
   pendingDiffs: Array<PresenceDiff> = []

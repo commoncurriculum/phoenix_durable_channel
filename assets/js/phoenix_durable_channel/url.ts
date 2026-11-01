@@ -1,6 +1,5 @@
 export type Params = Record<string, unknown>
 
-/** Phoenix's query string: nested objects become `parent[child]=value`. */
 export function serialize(params: Params, parentKey?: string): string {
   return Object.entries(params)
     .map(([key, value]) => {

@@ -1,25 +1,9 @@
 defmodule PhoenixDurableChannel.Stream.Memory do
-  @moduledoc """
-  A `PhoenixDurableChannel.Stream`, read through the channel, and a `PhoenixDurableChannel.Ledger`, kept in
-  this node's memory.
-
-  It costs no storage. Each node keeps its own messages, numbered on their own, so each
-  node's are an epoch of their own: a client that reconnects to another node, or to this
-  one after a restart, reads that node's from where it last read them, or from the start.
-  The ledger is this node's too, so it suits one node: on another node, or after a
-  restart, the client's durable messages are handled again.
-  It keeps the last `:kept` messages of each topic (default 1000). It forgets a topic once
-  no channel process of the topic has been alive and no message appended for
-  `:forget_after` milliseconds (default one hour).
-
-      children = [{PhoenixDurableChannel.Stream.Memory, kept: 1000, forget_after: :timer.hours(1)}]
-  """
   @behaviour PhoenixDurableChannel.Ledger
   @behaviour PhoenixDurableChannel.Stream
   @behaviour PhoenixDurableChannel.Stream.ThroughChannel
   use GenServer
 
-  # The client never has more than 32 durable messages unanswered.
   @replies_kept 64
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
@@ -55,7 +39,6 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     {:reply, :ok, state}
   end
 
-  # Called from a channel process as it joins: the topic is not forgotten while it lives.
   def handle_call({:watch, topic, channel}, _from, state) do
     if not Map.has_key?(state.channels, channel), do: Process.monitor(channel)
     put(topic, kept(topic))
@@ -81,10 +64,6 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     {:noreply, state}
   end
 
-  @doc """
-  What is kept for `topic`: its epoch, the last number, and the messages newest first. A
-  topic with nothing kept gets a new epoch.
-  """
   def kept(topic) do
     case :ets.lookup(__MODULE__, topic) do
       [{^topic, kept}] ->
@@ -111,7 +90,6 @@ defmodule PhoenixDurableChannel.Stream.Memory do
   @impl PhoenixDurableChannel.Ledger
   def reply(socket, number), do: Map.get(kept(socket.topic).replies, number)
 
-  @doc "Keeps `kept` for `topic`, and notes the time, from which it is forgotten."
   def put(topic, kept),
     do:
       :ets.insert(

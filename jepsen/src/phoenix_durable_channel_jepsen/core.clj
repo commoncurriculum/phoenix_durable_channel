@@ -45,7 +45,6 @@
       (throw (ex-info (str "docker " (str/join " " arguments) " failed: " err) {:exit exit})))
     out))
 
-;; Jepsen reaches the nodes with `docker exec` and `docker cp`, so they need no SSH.
 (defrecord DockerExec [container]
   control/Remote
   (connect [this conn-spec] (assoc this :container (container-name (:host conn-spec))))
@@ -94,7 +93,6 @@
 
     db/Pause
     (pause! [_ _test _node] (c/exec* "pkill -STOP -x beam.smp || true"))
-    ;; A node killed while paused has nothing to resume.
     (resume! [_ _test _node] (c/exec* "pkill -CONT -x beam.smp || true"))
 
     db/LogFiles
@@ -165,7 +163,6 @@
           payloads
           (recur (header "stream-next-offset") payloads))))))
 
-;; S2 answers 416 for a read at the tail.
 (defmethod read-stream "s2" [_test client]
   (loop [from 0 payloads []]
     (let [url (str "http://127.0.0.1:4251/v1/streams/" (URLEncoder/encode ^String (topic client) "UTF-8")
@@ -189,7 +186,6 @@
   "Each thread pushes as one client; several threads share one, so a client has several
   pushes in flight at once."
   [test op]
-  ;; A crashed process's replacement is numbered `concurrency` on, on the same thread.
   (let [thread (mod (:process op) (:concurrency test))]
     (nth (:clients test) (mod thread (count (:clients test))))))
 
@@ -225,8 +221,6 @@
           (catch java.net.http.HttpTimeoutException _
             (assoc op :type :info :client name :error :timeout)))
 
-        ;; Waits for every push to be answered, then for every client to have been
-        ;; delivered as many messages as its stream holds.
         :read
         (do (wait-until! 120000 #(zero? (driver! "/unanswered" {} 10000)))
             (let [streams (into {} (map (juxt identity #(read-stream test %)) (:clients test)))]
@@ -311,7 +305,6 @@
     (invoke! [_ test op]
       (case (:f op)
         :cut-off-clients
-        ;; One or two nodes, so some client is almost always connected to one of them.
         (let [nodes (take (inc (rand-int 2)) (shuffle (:nodes test)))]
           (c/on-nodes test nodes
                       (fn [_ _]
@@ -357,7 +350,6 @@
   [opts]
   (let [db (db)
         package (nemesis-package (assoc opts :db db))
-        ;; S2 Lite keeps its streams between runs, so each run's topics are new.
         run (System/currentTimeMillis)]
     (merge tests/noop-test
            opts
@@ -385,7 +377,6 @@
 (def faults #{:partition :kill :pause :cut-off-clients})
 
 (def cli-opts
-  ;; Jepsen keeps its own results under :store.
   [[nil "--store STORE" "The server's ledger and stream: mongo (read through the channel), s2 or durable-streams."
     :id :durable-store
     :default "mongo"

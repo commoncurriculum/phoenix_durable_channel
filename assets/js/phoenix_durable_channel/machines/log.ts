@@ -4,14 +4,11 @@ import { DURABLE_WINDOW } from "../constants"
 import type { Reply } from "../reply"
 import { isNotTaken } from "../wire"
 
-/** A durable message from the app, kept until the server answers it. */
 export interface Entry {
   event: string
   payload: unknown
   reply: Reply
-  /** Given when it is sent; null until then. */
   number: number | null
-  /** The ref of the frame that last carried it; null while it waits for room in the window. */
   ref: string | null
 }
 
@@ -38,8 +35,6 @@ export interface LogHooks {
 export interface LogContext {
   hooks: LogHooks
   queue: Array<Entry>
-  // The number the app's next durable message gets, once a sync has said how many the
-  // server has received. Read only while synced.
   next: number
   tries: number
 }
@@ -51,10 +46,6 @@ const isOurs = (context: LogContext, event: ReplyEvent) =>
 
 const notTaken = (event: ReplyEvent) => event.status === "error" && isNotTaken(event.response)
 
-/**
- * Numbers and sends the waiting entries, in order, while fewer than `DURABLE_WINDOW` are
- * unanswered, numbering on from `next`.
- */
 function sendWaiting(hooks: LogHooks, queue: Array<Entry>, next: number) {
   let number = next
   let inFlight = queue.filter((entry) => entry.ref !== null).length
@@ -68,12 +59,6 @@ function sendWaiting(hooks: LogHooks, queue: Array<Entry>, next: number) {
   return { queue: sent, next: number }
 }
 
-/**
- * The app's durable messages, sent to the server once and in order. After every join, and
- * after a message the server did not take, the log syncs: the server replies with the
- * last number it received, and the log sends every unanswered message again, in order.
- * At most `DURABLE_WINDOW` are unanswered at once; the rest wait for answers.
- */
 export const logMachine = setup({
   types: {
     context: {} as LogContext,
@@ -92,7 +77,6 @@ export const logMachine = setup({
     })),
     sendWaiting: assign(({ context }) => sendWaiting(context.hooks, context.queue, context.next)),
     answer: assign(({ context }, event: ReplyEvent) => {
-      // A not-taken reply is no answer: the message is sent again after the next sync.
       if (notTaken(event)) return {}
       for (const entry of context.queue.filter((entry) => entry.ref === event.ref))
         context.hooks.answer(entry, event.status === "ok" ? "ok" : "error", event.response)
@@ -102,9 +86,6 @@ export const logMachine = setup({
     }),
     sync: ({ context }) => context.hooks.sync(),
     applySync: assign(({ context }, received: number) => {
-      // No entry still here is in flight: the server replies in order, so one sent before
-      // this sync was answered or refused as not taken before this reply. An entry numbered
-      // past `received + 1` was numbered by a ledger that has since lost it.
       const next = Math.min(context.queue[0]?.number ?? received + 1, received + 1)
       const waiting = context.queue.map((entry) => ({
         ...entry,
@@ -143,7 +124,6 @@ export const logMachine = setup({
           target: "synced",
           actions: { type: "applySync", params: ({ event }) => event.received },
         },
-        // A lost connection fails the sync too; CHANNEL_LEFT has already moved the log away.
         SYNC_FAILED: [{ guard: "channelJoined", target: "backingOff" }, { target: "away" }],
       },
     },
@@ -162,7 +142,6 @@ export const logMachine = setup({
         PUSH: {
           actions: [{ type: "enqueue", params: ({ event }) => event.entry }, "sendWaiting"],
         },
-        // The not-taken replies to the entries sent after it arrive later, and are ignored.
         REPLY: [
           { guard: "notTaken", target: "backingOff" },
           {

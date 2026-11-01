@@ -10,7 +10,6 @@ function durableTopic(name: string): string {
   return `durable:${name}:${Math.random().toString(36).slice(2)}`
 }
 
-/** Every "update" the channel's bindings see, by body. */
 function updates(channel: Channel): Array<string> {
   const bodies: Array<string> = []
   channel.on("update", (payload) => bodies.push((payload as { body: string }).body))
@@ -28,7 +27,6 @@ test("durable messages go both ways once and in order, beside fire-and-forget on
   const seen = updates(channel)
   channel.join()
 
-  // Pushed before the join is answered: numbered once the first sync says where the server is.
   const first = channel.push("action", { body: "first" }, { durable: true })
   const second = channel.push("action", { body: "second" }, { durable: true })
   expect(channel.log?.status.pending).toBe(2)
@@ -42,7 +40,6 @@ test("durable messages go both ways once and in order, beside fire-and-forget on
   })
   expect(channel.log?.status.pending).toBe(0)
 
-  // Pushed while synced: sent at once. A refusal is an answer; a reply-less handle_in is "ok".
   expect(await answer(channel.push("action", { body: "refuse" }, { durable: true }))).toEqual({
     status: "error",
     response: { reason: "refused" },
@@ -51,13 +48,11 @@ test("durable messages go both ways once and in order, beside fire-and-forget on
     status: "ok",
     response: {},
   })
-  // A crash is answered and recorded once, and the channel carries on.
   expect(await answer(channel.push("action", { body: "crash" }, { durable: true }))).toEqual({
     status: "error",
     response: { reason: "crashed" },
   })
   expect(channel.state).toBe("joined")
-  // The handler gets the message's number.
   expect(await answer(channel.push("action", { body: "number" }, { durable: true }))).toEqual({
     status: "ok",
     response: { number: 6 },
@@ -72,12 +67,10 @@ test("durable messages go both ways once and in order, beside fire-and-forget on
   await waitFor(() => seen.length === 2)
   expect(seen).toEqual(["one", "two"])
 
-  // Fire and forget on the same channel: no number, straight to the bindings.
   const fired = nextEvent(channel, "fired")
   channel.push("fire", { hello: "world" })
   expect(await fired).toEqual({ hello: "world" })
 
-  // A channel opened without `durable` takes numbered messages as plain ones and refuses to log.
   const plain = socket.channel(durableTopic("plain"))
   const plainSeen = updates(plain)
   await join(plain)
@@ -101,13 +94,10 @@ test("a gap is fetched, and what the server no longer has is skipped", async () 
 
   await answer(channel.push("publish", { body: "1" }))
   await answer(channel.push("publish_silently", { body: "2" }))
-  // 3 arrives after a gap: the read ends, and the next one gets 2 and 3 again.
   await answer(channel.push("publish", { body: "3" }))
   await waitFor(() => seen.length === 3)
   expect(seen).toEqual(["1", "2", "3"])
 
-  // 4 is gone from the server before the client asks. 5 ends the read, and the next read
-  // gets 5 and 6 again: past 4, which the server no longer has.
   await answer(channel.push("publish_silently", { body: "4" }))
   await answer(channel.push("forget"))
   channel.push("publish", { body: "5" })
@@ -129,7 +119,6 @@ test("a reply lost with the connection is sent again, handled once, and answered
 
   const lost = channel.push("action", { body: "lose_reply" }, { durable: true })
   await waitFor(() => channel.state !== "joined")
-  // Pushed while the channel is away: waits for the rejoin, then goes after the resend.
   const waiting = channel.push("action", { body: "while away" }, { durable: true })
   await waitFor(() => channel.state === "joined")
 
@@ -164,14 +153,10 @@ test("a ledger that lost what it kept starts both directions again from its numb
   await waitFor(() => seen.length === 2)
 
   await answer(channel.push("reset"))
-  // Numbered 2 by the client, while the ledger now expects 1: refused, synced, renumbered.
   expect(await answer(channel.push("action", { body: "after" }, { durable: true }))).toEqual({
     status: "ok",
     response: { body: "after" },
   })
-  // A ledger loses what it kept when its node restarts, which drops the connection. The read
-  // after the rejoin finds the server behind the client, and reads all it has again, so a
-  // second 1 is new whether it is sent before that read or after.
   channel.push("kill_transport")
   await waitFor(() => channel.state !== "joined")
   await waitFor(() => channel.state === "joined")
@@ -195,7 +180,6 @@ test("a reconnecting client gets what was published while it was away", async ()
   await waitFor(() => channel.state !== "joined")
   await waitFor(() => channel.state === "joined")
   await answer(channel.push("publish_silently", { body: "2" }))
-  // Nothing tells the client about 2 until a gap or a rejoin; a rejoin does.
   channel.push("kill_transport")
   await waitFor(() => channel.state !== "joined")
   await waitFor(() => seen.length === 2)
@@ -211,8 +195,6 @@ test("`after` resumes from a number the app saved, and the first read starts fro
   for (const body of ["1", "2", "3"]) await answer(earlier.push("publish_silently", { body }))
   await answer(earlier.leave())
 
-  // No `after`: starts from where the server is, so 1 to 3 are not delivered. The greeting,
-  // pushed after the join reply but before the read's reply, is.
   const fresh = socket.channel(topic, { greet: true }, { durable: true })
   const freshSeen = updates(fresh)
   await join(fresh)
@@ -238,7 +220,6 @@ test("a sync with no answer is tried again; a durable push and a read die with t
     response: { body: "after a slow sync" },
   })
 
-  // Left while its read waits for an answer: the late answer finds the read gone.
   const reading = socket.channel(durableTopic("slow_read"), {}, { durable: true, after: 0 })
   const seen = updates(reading)
   await join(reading)
@@ -303,8 +284,6 @@ test("a message the old connection's process is still running when the client re
   const room = socket.channel(topic("lingering"))
   await join(room)
 
-  // The server's process for the old connection is still in the slow handler when the
-  // client rejoins on a new one; the new join waits for it, so the sync finds it recorded.
   const slow = channel.push("action", { body: "slow" }, { durable: true })
   await new Promise((resolve) => setTimeout(resolve, 100))
   room.push("kill_transport")
@@ -330,7 +309,6 @@ test("a late join from a connection the client left replaces its channel, and th
     response: { body: "first" },
   })
 
-  // The late join's process replaces the live one, and its connection goes away.
   const late = openSocket("/socket", fast)
   late.connect()
   await join(late.channel(name, {}, { durable: true }))
@@ -347,7 +325,6 @@ test("a late join from a connection the client left replaces its channel, and th
 
 test("a durable push that reaches a replaced channel's connection after it stopped is sent again", async () => {
   const name = durableTopic("unmatched")
-  // Frames to the client wait here while `held` is set, as a slow network holds them.
   let held: Array<() => void> | null = null
   const socket = openSocket("/socket", {
     ...fast,
@@ -367,7 +344,6 @@ test("a durable push that reaches a replaced channel's connection after it stopp
   await join(late.channel(name, {}, { durable: true }))
   await new Promise<void>((resolve) => late.disconnect(resolve))
 
-  // Sent before the client hears of phx_error: Phoenix answers it "unmatched topic".
   const crossing = channel.push("action", { body: "crossing" }, { durable: true })
   await new Promise((resolve) => setTimeout(resolve, 200))
   const release = held
@@ -421,7 +397,6 @@ test("a store that numbers afresh is read from its start, and one read before fr
   await answer(channel.push("publish", { body: "2" }))
   await waitFor(() => seen.length === 2)
 
-  // Another node's memory, numbered from 1 again: the read after the rejoin says so.
   await answer(channel.push("reset"))
   channel.push("kill_transport")
   await waitFor(() => channel.state !== "joined")
@@ -429,7 +404,6 @@ test("a store that numbers afresh is read from its start, and one read before fr
   await answer(channel.push("publish", { body: "other 1" }))
   await waitFor(() => seen.length === 3)
 
-  // Back on the first node: read on after 2, so nothing comes twice.
   await answer(channel.push("restore"))
   channel.push("kill_transport")
   await waitFor(() => channel.state !== "joined")
@@ -461,7 +435,6 @@ test("a server from an earlier deploy, which joins without durable messages, is 
     status: "ok",
     response: { body: "saved" },
   })
-  // Each join the old server took was left, so it keeps no channel process behind.
   const oldJoins = await count(`old_joins:${upgrading}`)
   expect(oldJoins).toBeGreaterThanOrEqual(2)
   await expect.poll(() => count(`old_left:${upgrading}`)).toBe(oldJoins)

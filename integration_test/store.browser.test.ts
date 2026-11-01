@@ -27,7 +27,6 @@ test.each(["memory", "mongo", "s2", "durable-streams"])(
       response: { body: "first" },
     })
 
-    // Handled and recorded, then the connection dies: the resend gets the recorded reply.
     const lost = channel.push("action", { body: "lose_reply" }, { durable: true })
     await waitFor(() => channel.state !== "joined")
     const waiting = channel.push("action", { body: "while away" }, { durable: true })
@@ -46,7 +45,6 @@ test.each(["memory", "mongo", "s2", "durable-streams"])(
     await waitFor(() => seen.length === 2)
     expect(seen).toEqual(["before", "after"])
 
-    // Another connection for the same client numbers on from what the store recorded.
     await new Promise<void>((resolve) => socket.disconnect(resolve))
     const again = openSocket("/socket", fast)
     again.connect()
