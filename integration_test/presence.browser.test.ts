@@ -1,5 +1,5 @@
 import { expect, test } from "vitest"
-import { Presence, type PresenceEntry, type PresenceState } from "../src/presence"
+import { Presence, type PresenceEntry, type PresenceState } from "../assets/js/phoenix_durable_channel/presence"
 import { answer, join, openSocket, waitFor } from "./support/helpers"
 
 const entry = (...refs: Array<string>): PresenceEntry => ({

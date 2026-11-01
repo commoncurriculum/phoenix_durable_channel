@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the Jepsen test: compiles server/, brings up the cluster (docker/compose.yml), makes
+# Runs the Jepsen test: compiles phoenix_app/, brings up the cluster (docker/compose.yml), makes
 # the S2 basin, starts the clients' driver, then `lein run test` with any arguments given
 # here. Needs a running Docker daemon.
 set -euo pipefail
@@ -8,7 +8,7 @@ export REPOSITORY="$(cd "$here/.." && pwd)"
 export MISE_INSTALLS="$(cd "$(mise where erlang)/../.." && pwd)"
 compose=(docker compose -f "$here/docker/compose.yml")
 
-(cd "$here/server" && ELIXIR_ERL_OPTIONS=+fnu mix do deps.get, compile)
+(cd "$here/phoenix_app" && ELIXIR_ERL_OPTIONS=+fnu mix do deps.get, compile)
 "${compose[@]}" up -d --build --wait --remove-orphans
 # Answered 409 when the basin is there from an earlier run.
 curl -s -o /dev/null -X POST http://127.0.0.1:4251/v1/basins -H 'content-type: application/json' \

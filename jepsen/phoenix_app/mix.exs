@@ -9,7 +9,7 @@ defmodule JepsenServer.MixProject do
     [mod: {JepsenServer.Application, []}, extra_applications: [:logger]]
   end
 
-  # The same Phoenix, PubSub, Cowboy and WebSockAdapter versions as test/server.
+  # The same Phoenix, PubSub, Cowboy and WebSockAdapter versions as integration_test/phoenix_app.
   defp deps do
     [
       {:phoenix, "1.7.21"},
@@ -20,7 +20,7 @@ defmodule JepsenServer.MixProject do
       {:jason, "~> 1.4"},
       {:mongodb_driver, "~> 1.5"},
       {:req, "~> 0.5"},
-      {:phoenix_durable_channel, path: "../../server"},
+      {:phoenix_durable_channel, path: "../.."},
       {:s2_client,
        git: "https://github.com/commoncurriculum/s2-elixir-client.git",
        ref: "b7f494de34c5297aa77ee97c31c61d120e6ce794"}

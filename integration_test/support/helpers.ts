@@ -1,8 +1,8 @@
 import { inject, onTestFinished } from "vitest"
-import type { Channel } from "../../src/channel"
-import type { Push, ReplyStatus } from "../../src/push"
-import type { Reply } from "../../src/reply"
-import { Socket, type SocketOptions } from "../../src/socket"
+import type { Channel } from "../../assets/js/phoenix_durable_channel/channel"
+import type { Push, ReplyStatus } from "../../assets/js/phoenix_durable_channel/push"
+import type { Reply } from "../../assets/js/phoenix_durable_channel/reply"
+import { Socket, type SocketOptions } from "../../assets/js/phoenix_durable_channel/socket"
 
 export const phoenixUrl = inject("phoenixUrl")
 

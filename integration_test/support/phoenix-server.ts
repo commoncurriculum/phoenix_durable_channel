@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import type { TestProject } from "vitest/node"
 
 const PORT = 4400
-const serverDirectory = fileURLToPath(new URL("../server", import.meta.url))
+const serverDirectory = fileURLToPath(new URL("../phoenix_app", import.meta.url))
 const environment = {
   ...process.env,
   PORT: `${PORT}`,
@@ -67,12 +67,12 @@ const DURABLE_STREAMS_PORT = 4402
 let durableStreams: ChildProcess | null = null
 
 // The `durable-streams-cloudflare` worker on wrangler, with a project whose tokens the test
-// server signs (test/server/config/config.exs).
+// app signs (integration_test/phoenix_app/config/config.exs).
 async function startDurableStreams() {
   const url = `http://127.0.0.1:${DURABLE_STREAMS_PORT}/`
   if (await answers(url)) return
   durableStreams = spawn(
-    fileURLToPath(new URL("../durable-streams/serve.sh", import.meta.url)),
+    fileURLToPath(new URL("../durable_streams/serve.sh", import.meta.url)),
     [
       `${DURABLE_STREAMS_PORT}`,
       "phoenix-durable-channel",

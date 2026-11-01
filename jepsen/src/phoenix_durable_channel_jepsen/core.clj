@@ -1,7 +1,7 @@
 (ns phoenix-durable-channel-jepsen.core
   "Jepsen test of phoenix-durable-channel's durable messages.
 
-  Three nodes run server/, a Phoenix app with one durable channel on the library's server
+  Three nodes run phoenix_app/, a Phoenix app with one durable channel on the library's server
   side, as one Erlang cluster. One of the library's stores, shared by all nodes, is both its
   ledger and its stream: MongoDB (read through the channel), S2 Lite, or the Durable Streams
   worker on Durable Objects under wrangler (each read by the client with its own protocol).
@@ -64,7 +64,7 @@
   (str (System/getenv "REPOSITORY") "/jepsen/docker/start-node.sh"))
 
 (defn start-node!
-  "Starts server/ on `node` and waits until it serves. A node still running, or paused, is
+  "Starts phoenix_app/ on `node` and waits until it serves. A node still running, or paused, is
   resumed instead: a second server could not take the port."
   [test node]
   (let [peers (->> (:nodes test) (remove #{node}) (map #(str "jepsen@" %)) (str/join ","))]
@@ -78,7 +78,7 @@
   (c/exec* "while pgrep -x beam.smp >/dev/null; do sleep 0.1; done"))
 
 (defn db
-  "server/ on every node."
+  "phoenix_app/ on every node."
   []
   (reify
     db/DB

@@ -8,10 +8,10 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./assets/js/phoenix_durable_channel/index.ts"
   },
   "files": [
-    "src"
+    "assets/js"
   ],
   "packageManager": "pnpm@11.1.1",
   "scripts": {

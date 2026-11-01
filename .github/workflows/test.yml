@@ -10,7 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # PhoenixDurableChannel.Stream.Mongo's tests; test/support/phoenix-server.ts uses it on this port.
+    # PhoenixDurableChannel.Stream.Mongo's tests; integration_test/support/phoenix-server.ts uses it on this port.
     services:
       mongo:
         image: mongo:7.0
@@ -28,9 +28,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: |
-            test/server/deps
-            test/server/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('test/server/mix.lock') }}
+            integration_test/phoenix_app/deps
+            integration_test/phoenix_app/_build
+          key: ${{ runner.os }}-mix-${{ hashFiles('integration_test/phoenix_app/mix.lock') }}
 
       # And against S2 Lite, from the s2 CLI at the version in mise.toml.
       - name: Install the s2 CLI

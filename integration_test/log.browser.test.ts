@@ -1,7 +1,7 @@
 import { expect, test } from "vitest"
-import type { Channel } from "../src/channel"
-import { LongPoll } from "../src/longpoll"
-import { Serializer } from "../src/serializer"
+import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
+import { LongPoll } from "../assets/js/phoenix_durable_channel/longpoll"
+import { Serializer } from "../assets/js/phoenix_durable_channel/serializer"
 import { answer, join, nextEvent, openSocket, topic, waitFor } from "./support/helpers"
 
 const fast = { rejoinAfterMs: () => 10, reconnectAfterMs: () => 10 }

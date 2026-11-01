@@ -1,6 +1,6 @@
 import { expect, test } from "vitest"
-import { Serializer, type EncodedMessage, type Message } from "../src/serializer"
-import { appendParams, serialize } from "../src/url"
+import { Serializer, type EncodedMessage, type Message } from "../assets/js/phoenix_durable_channel/serializer"
+import { appendParams, serialize } from "../assets/js/phoenix_durable_channel/url"
 
 const encode = (message: Message) => Serializer.encode(message, (encoded) => encoded)
 const decode = (raw: EncodedMessage) => Serializer.decode(raw, (message) => message)

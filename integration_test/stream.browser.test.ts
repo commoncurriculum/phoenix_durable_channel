@@ -1,6 +1,6 @@
 import { expect, inject, test } from "vitest"
-import type { Channel } from "../src/channel"
-import { DurableStream, S2Stream, type PublishedReader, type StreamMessage } from "../src/stream"
+import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
+import { DurableStream, S2Stream, type PublishedReader, type StreamMessage } from "../assets/js/phoenix_durable_channel/stream"
 import { answer, join, openSocket, waitFor } from "./support/helpers"
 
 const s2Url = inject("s2Url")

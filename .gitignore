@@ -1,11 +1,11 @@
 node_modules/
 coverage/
-server/_build/
-server/deps/
+/_build/
+/deps/
 .wrangler/
 jepsen/store/
 jepsen/target/
 jepsen/driver.log
-jepsen/server/_build/
-jepsen/server/deps/
+jepsen/phoenix_app/_build/
+jepsen/phoenix_app/deps/
 tsconfig.tsbuildinfo

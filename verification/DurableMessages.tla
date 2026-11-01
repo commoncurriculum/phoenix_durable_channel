@@ -1,8 +1,9 @@
 ---------------------------- MODULE DurableMessages ----------------------------
 (***************************************************************************)
-(* The client's durable messages on one channel: logMachine in              *)
-(* src/machines/log.ts on the client, and join/3, replace/1,               *)
-(* handle_durable/4 and sync/2 in server/lib/phoenix_durable_channel/channel.ex with *)
+(* The client's durable messages on one channel: logMachine in            *)
+(* assets/js/phoenix_durable_channel/machines/log.ts on the client, and    *)
+(* join/3, replace/1, handle_durable/4 and sync/2 in                       *)
+(* lib/phoenix_durable_channel/channel.ex with *)
 (* a ledger on the server. The server's durable messages to the client are  *)
 (* ChannelRead.tla.                                                        *)
 (*                                                                         *)

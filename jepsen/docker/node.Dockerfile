@@ -1,4 +1,4 @@
-# A Jepsen node: runs server/ from the mounted checkout with the mounted mise tools.
+# A Jepsen node: runs phoenix_app/ from the mounted checkout with the mounted mise tools.
 # Same Ubuntu as the cloud session, so the mounted Erlang finds its libraries.
 FROM mirror.gcr.io/library/ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \

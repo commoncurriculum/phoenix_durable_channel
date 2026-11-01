@@ -1,8 +1,9 @@
 ---------------------------- MODULE StreamReader ----------------------------
 (***************************************************************************)
 (* A channel reading its durable messages from the store its join reply     *)
-(* names instead of from Phoenix: readerMachine in src/machines/reader.ts, *)
-(* and Reader, S2Stream and DurableStream in src/stream.ts. The server     *)
+(* names instead of from Phoenix. In assets/js/phoenix_durable_channel:    *)
+(* readerMachine in machines/reader.ts, and Reader, S2Stream and           *)
+(* DurableStream in stream.ts. The server                                  *)
 (* appends; each read returns the store in order from where it starts. An  *)
 (* S2 read starts right after `last`; a Durable Streams read starts there  *)
 (* only when it knows where `last` ends (the read that delivered it, or    *)

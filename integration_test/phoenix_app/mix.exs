@@ -18,7 +18,7 @@ defmodule TestServer.MixProject do
       {:cowboy, "2.10.0", override: true},
       {:websock_adapter, "0.5.9"},
       {:jason, "~> 1.4"},
-      {:phoenix_durable_channel, path: "../../server"},
+      {:phoenix_durable_channel, path: "../.."},
       {:req, "~> 0.5"},
       {:mongodb_driver, "~> 1.5"},
       {:s2_client,

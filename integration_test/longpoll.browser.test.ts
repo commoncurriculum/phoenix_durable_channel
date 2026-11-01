@@ -1,6 +1,6 @@
 import { expect, test } from "vitest"
-import type { CloseDetails } from "../src/actors"
-import { LongPoll } from "../src/longpoll"
+import type { CloseDetails } from "../assets/js/phoenix_durable_channel/actors"
+import { LongPoll } from "../assets/js/phoenix_durable_channel/longpoll"
 import { answer, join, nextEvent, openSocket, phoenixUrl, topic, waitFor } from "./support/helpers"
 
 const fast = { reconnectAfterMs: () => 10, rejoinAfterMs: () => 10 }

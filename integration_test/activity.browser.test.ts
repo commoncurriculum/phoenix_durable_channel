@@ -1,6 +1,6 @@
 import { ActivityTracker } from "@supergrain/activity"
 import { expect, onTestFinished, test } from "vitest"
-import type { CloseDetails } from "../src/actors"
+import type { CloseDetails } from "../assets/js/phoenix_durable_channel/actors"
 import { join, openSocket, topic, waitFor } from "./support/helpers"
 
 function tracker(): ActivityTracker {

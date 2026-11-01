@@ -1,6 +1,7 @@
 ---------------------------- MODULE SocketBuffer ----------------------------
 (***************************************************************************)
-(* The socket's own push buffer in src/socket.ts: frames pushed while the  *)
+(* The socket's own push buffer in                                         *)
+(* assets/js/phoenix_durable_channel/socket.ts: frames pushed while the    *)
 (* connection is not open wait in context.buffer and go out, in order, as  *)
 (* it opens. A dropped connection loses the frames in flight; the channel  *)
 (* and its pushes' timeouts answer those (PhoenixDurableChannel.tla).              *)

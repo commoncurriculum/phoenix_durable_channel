@@ -2,7 +2,7 @@
 // `jepsen:<client>`, and pushes durable `add` messages; the server appends each to the
 // channel's stream as `added`. driver.mjs calls `window.jepsen`.
 
-import { LongPoll, Socket, type Channel } from "../../src/index"
+import { LongPoll, Socket, type Channel } from "../../assets/js/phoenix_durable_channel/index"
 
 interface Client {
   socket: Socket

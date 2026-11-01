@@ -1,12 +1,12 @@
 import { playwright } from "@vitest/browser-playwright"
 import { defineConfig } from "vitest/config"
 
-// Every test runs in real Chromium against a real Phoenix server (test/server, the same
-// Phoenix, Cowboy and WebSockAdapter versions as the backend), which globalSetup starts.
+// Every test runs in real Chromium against a real Phoenix app (integration_test/phoenix_app),
+// which globalSetup starts.
 export default defineConfig({
   test: {
-    globalSetup: ["test/support/phoenix-server.ts"],
-    include: ["test/**/*.browser.test.ts"],
+    globalSetup: ["integration_test/support/phoenix-server.ts"],
+    include: ["integration_test/**/*.browser.test.ts"],
     testTimeout: 20_000,
     browser: {
       enabled: true,
@@ -17,7 +17,7 @@ export default defineConfig({
     },
     coverage: {
       provider: "v8",
-      include: ["src/**/*.ts"],
+      include: ["assets/js/**/*.ts"],
       thresholds: { 100: true },
     },
   },

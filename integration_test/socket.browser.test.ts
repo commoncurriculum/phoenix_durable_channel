@@ -1,8 +1,8 @@
 import { expect, test } from "vitest"
-import type { CloseDetails } from "../src/actors"
-import { LongPoll } from "../src/longpoll"
-import { Serializer } from "../src/serializer"
-import { Socket } from "../src/socket"
+import type { CloseDetails } from "../assets/js/phoenix_durable_channel/actors"
+import { LongPoll } from "../assets/js/phoenix_durable_channel/longpoll"
+import { Serializer } from "../assets/js/phoenix_durable_channel/serializer"
+import { Socket } from "../assets/js/phoenix_durable_channel/socket"
 import { answer, join, openSocket, phoenixUrl, topic, waitFor } from "./support/helpers"
 
 test("opens, reports, disconnects and connects again", async () => {

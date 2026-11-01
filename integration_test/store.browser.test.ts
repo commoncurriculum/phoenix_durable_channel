@@ -1,5 +1,5 @@
 import { expect, test } from "vitest"
-import type { Channel } from "../src/channel"
+import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
 import { answer, join, openSocket, waitFor } from "./support/helpers"
 
 const fast = { rejoinAfterMs: () => 10, reconnectAfterMs: () => 10 }
