@@ -141,7 +141,7 @@ packages:
     engines: {node: '>=12'}
 
   '@durable-streams-cloudflare/server@https://codeload.github.com/commoncurriculum/durable-streams-cloudflare/tar.gz/9e9481380662491c16ec4656d093ed0559f49fd1#path:packages/server':
-    resolution: {gitHosted: true, integrity: sha512-gcdVgITLEYi/1oSaOOKouuOQaonMjRBL6CNsKeR7cFF7E3iPFlzMz3sNfBSMOrfr0C34HBq9jRWqGkMeMn4FeA==, tarball: https://codeload.github.com/commoncurriculum/durable-streams-cloudflare/tar.gz/9e9481380662491c16ec4656d093ed0559f49fd1}
+    resolution: {gitHosted: true, path: packages/server, tarball: https://codeload.github.com/commoncurriculum/durable-streams-cloudflare/tar.gz/9e9481380662491c16ec4656d093ed0559f49fd1}
     version: 0.8.0
     peerDependencies:
       '@cloudflare/workers-types': '>=4'
