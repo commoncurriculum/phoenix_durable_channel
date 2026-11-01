@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { execFileSync, spawn, type ChildProcess } from "node:child_process"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, openSync } from "node:fs"
 import { connect } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -18,8 +18,9 @@ const environment = {
 
 let server: ChildProcess | null = null
 
+// A server still starting can take the connection and not answer it.
 function answers(url: string): Promise<boolean> {
-  return fetch(url).then(
+  return fetch(url, { signal: AbortSignal.timeout(1_000) }).then(
     () => true,
     () => false,
   )
@@ -71,6 +72,10 @@ let durableStreams: ChildProcess | null = null
 async function startDurableStreams() {
   const url = `http://127.0.0.1:${DURABLE_STREAMS_PORT}/`
   if (await answers(url)) return
+  const log = openSync(
+    fileURLToPath(new URL("../durable_streams/wrangler.log", import.meta.url)),
+    "w",
+  )
   durableStreams = spawn(
     fileURLToPath(new URL("../durable_streams/serve.sh", import.meta.url)),
     [
@@ -78,7 +83,7 @@ async function startDurableStreams() {
       "phoenix-durable-channel",
       "phoenix-durable-channel-signing-secret",
     ],
-    { stdio: "ignore", detached: true },
+    { stdio: ["ignore", log, log], detached: true },
   )
   await waitUntil(() => answers(url), "the Durable Streams worker", 60_000)
 }
