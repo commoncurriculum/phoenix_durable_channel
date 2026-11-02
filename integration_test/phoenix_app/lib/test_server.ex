@@ -73,27 +73,24 @@ defmodule TestServer.Endpoint do
   plug(:durable_streams)
   plug(:health)
 
-  def durable_streams(%{path_info: ["durable-streams" | path]} = conn, _options) do
-    conn = Plug.Conn.fetch_query_params(conn)
+  def durable_streams(%{path_info: ["durable-streams" | path]} = connection, _options) do
+    connection = Plug.Conn.fetch_query_params(connection)
 
-    if conn.method == "GET",
+    if connection.method == "GET",
       do:
         TestServer.Joins.increment(
           "durable_streams_read:" <>
-            URI.decode_www_form(List.last(path)) <> "@" <> conn.query_params["offset"]
+            URI.decode_www_form(List.last(path)) <> "@" <> connection.query_params["offset"]
         )
 
-    body =
-      case Plug.Conn.read_body(conn) do
-        {:ok, body, _conn} -> body
-      end
+    body = connection |> Plug.Conn.read_body() |> elem(1)
 
     response =
       Req.request!(
-        method: conn.method,
-        url: "http://127.0.0.1:4402/" <> Enum.join(path, "/") <> "?" <> conn.query_string,
+        method: connection.method,
+        url: "http://127.0.0.1:4402/" <> Enum.join(path, "/") <> "?" <> connection.query_string,
         headers:
-          Enum.reject(conn.req_headers, fn {name, _value} ->
+          Enum.reject(connection.req_headers, fn {name, _value} ->
             name in ["host", "content-length"]
           end),
         body: body,
@@ -105,17 +102,19 @@ defmodule TestServer.Endpoint do
 
     response.headers
     |> Enum.reject(fn {name, _values} -> name in ["content-length", "transfer-encoding"] end)
-    |> Enum.reduce(conn, fn {name, values}, conn ->
-      Plug.Conn.put_resp_header(conn, name, Enum.join(values, ", "))
+    |> Enum.reduce(connection, fn {name, values}, connection ->
+      Plug.Conn.put_resp_header(connection, name, Enum.join(values, ", "))
     end)
     |> Plug.Conn.send_resp(response.status, response.body)
     |> Plug.Conn.halt()
   end
 
-  def durable_streams(conn, _options), do: conn
+  def durable_streams(connection, _options), do: connection
 
   def health(%{request_path: "/hang/websocket"}, _options), do: Process.sleep(:infinity)
-  def health(conn, _options), do: conn |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
+
+  def health(connection, _options),
+    do: connection |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
 end
 
 defmodule TestServer.UserSocket do
