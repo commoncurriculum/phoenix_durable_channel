@@ -1,6 +1,6 @@
 # phoenix_durable_channel
 
-Phoenix Channels where a message you mark durable is never lost. Each durable message is numbered, kept in a store you choose (MongoDB, S2 or Durable Objects), and delivered once and in order, in both directions, across reconnects, node failures and deploys. Every other message is plain Phoenix.
+Phoenix Channels where a message you mark durable is not lost while your store keeps it. Each durable message is numbered, kept in a store you choose (MongoDB, S2 or Durable Objects), and delivered once and in order, in both directions, across reconnects, node failures and deploys. Every other message is plain Phoenix.
 
 - **Why:** Phoenix Channels deliver at most once. A push in flight when a connection drops, a node dies or a deploy restarts a pod is gone, and phoenix.js answers it `"timeout"` with no way to know whether the server ran it. Apps patch around this with their own sequence numbers, resend loops and "request the lost one" events. This library does that once, under the protocol, for the messages that need it.
 - **What you change:** the client is a drop-in for phoenix.js (`import { Socket } from "phoenix_durable_channel"` instead of `"phoenix"`). The server is your existing `Phoenix.Channel` with one more `use` line and one serializer in your endpoint. Messages you don't mark durable cost nothing extra.
@@ -143,6 +143,8 @@ and in `lib/my_app/application.ex`:
 children = [PhoenixDurableChannel.Stream.DurableStreams, MyAppWeb.Endpoint]
 ```
 
+Each node keeps where it read each topic's streams to while a channel has the topic, and for `forget_after` (five minutes by default, `{PhoenixDurableChannel.Stream.DurableStreams, forget_after: :timer.minutes(5)}`) after the topic's last channel leaves, so a reconnect does not read the streams again from the start.
+
 ### 2c. The channel: one `use` line
 
 A durable channel's topic names **one client**, such as one page load: the ledger counts that client's messages, and a durable join makes its process the topic's only one. So the room's messages reach each client on the client's own topic. In `lib/my_app_web/user_socket.ex`:
@@ -219,6 +221,7 @@ A durable push is answered `"timeout"` only when its channel is closed (`channel
 
 - **Pages still on phoenix.js keep working.** They speak V2 frames without a sixth slot, which the serializer reads as before, and channels they join without `phx_durable` behave as plain Phoenix channels.
 - **A new page that reaches an old pod waits.** An old pod answers its durable join without `phx_durable: true`; the client treats that join as not joined, keeps its durable pushes, and joins again after a backoff until a pod with this library answers.
+- **Upgrading from a version of this library that answered the durable join with `phx_reader` is a breaking change.** This version answers `phx_durable: true` and pushes `phx_reader` after the join. A page loaded before the deploy treats the new reply as not joined and joins again until it is reloaded, its durable pushes waiting. Deploy it when pages can be reloaded, or reload them.
 
 ## Differences from phoenix.js 1.7
 
@@ -234,7 +237,7 @@ The calls and their arguments are the same. The behavior differs where phoenix.j
 
 New socket options: `heartbeatTimeoutMs`, `websocketRetryAfterMs`, `offlineAfterMs`, `activity` (an `ActivityTracker` from `@supergrain/activity`) and `disconnectAfterInactiveMs`. `socket.status` and `channel.status` are reactive supergrain objects (`connectionState`, `transport`, `online`; `state`).
 
-New channel options, the third argument of `socket.channel`: `durable`, `after` (the number of the last server message the app already has; without it the channel receives what is appended after its first join) and `readers` (below).
+New channel options, the third argument of `socket.channel`: `durable`, `after` (the number of the last server message the app already has, a whole number of 0 or more, or `socket.channel` throws; without it the channel receives what is appended after its first join) and `readers` (below).
 
 ## How durable messages work
 
@@ -256,7 +259,7 @@ The two directions are separate.
 
 - They go to the stream. Right after a durable join, once the topic's earlier process is gone, the server pushes `phx_reader`: where to read them, and `last`, the stream's last number then. A client with no `after` starts after `last`, so nothing durable after its join is missed however late its read opens.
 - A read through the channel pauses while the channel is not joined and starts again after the rejoin, so a read never waits in the socket's buffer. A read from the store's own protocol goes on regardless.
-- A message the store no longer has is skipped: the client delivers the next one it has, and logs `<topic> skipped durable messages <from> to <to>, which the store no longer has` through the socket's `logger`.
+- A message the store no longer has is skipped: the client delivers the next one it has, logs `<topic> skipped durable messages <from> to <to>, which the store no longer has` through the socket's `logger`, and triggers `phx_skipped` on the channel with `{after, next}`, the last number it delivered and the next it has, so `channel.on("phx_skipped", ...)` can reload what the app shows.
 - A durable channel's join answered `ok` without `phx_durable: true`, as a server without this library answers, is not joined: its pushes wait, the client leaves that join and joins again after a backoff.
 
 ## Stores
@@ -279,13 +282,13 @@ A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3
 
 - `push_durable/3` pushes each message with its number, and `since/3` answers the client's `phx_read {after}` a page at a time.
 - The server resends what it kept after `after`, then replies `{sent, epoch}`. Until that reply the client holds what arrives; after it, each message must be the next one, and one that isn't ends the read, as losing the connection does. The client reads again from the last message it delivered.
-- The read has no timeout: a server still paging is still sending.
+- The read has no timeout: a server still paging is still sending. A read the server answers with an error is logged through the socket's `logger` and asked again after a backoff.
 - The epoch names one numbering of the stream. A reply in another epoch ends the read, and the client reads that epoch from where it last got to in it, or from the start.
 
 **Read from the store's own protocol** (`S2`, `DurableStreams`):
 
 - Each topic is one stream of the same name, and each token reads only that stream. A store that refuses the token (401 or 403) makes the client ask the channel for a fresh reader (`phx_reader`) and read again.
-- S2 record `seq_num` n is message n + 1.
+- S2 record `seq_num` n is message n + 1. A command record, such as the trim S2 appends when a stream is deleted, takes a number but is no message: the client passes it.
 - Durable Streams offsets are opaque, so each message carries its number, `phx_reader` gives the offset where `last` ends, a read that fails starts again at the offset where it last got to, and the server numbers on from the stream's last with `Stream-Seq`, which the store refuses to repeat, so two nodes never write the same number.
 - A stream that is deleted and made again, or trimmed past where a client got to, is not noticed: delete a topic's stream only when no client will read it again.
 
@@ -294,11 +297,11 @@ A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3
 ```ts
 socket.channel(topic, params, {
   durable: true,
-  readers: { kafka: (latest, refresh) => new KafkaStream(latest(), refresh) },
+  readers: { kafka: (published, refresh) => new KafkaStream(published, refresh) },
 })
 ```
 
-`latest()` is what the last `phx_reader`, or the last `refresh()`, published. `refresh()` asks the channel for a fresh reader. A `MessageStream` may deliver a message again: the client drops any at or before the last one it delivered. A type the client has no reader for is logged to the console, and its messages are not read.
+`published` is the last `phx_reader` when the read starts. `refresh()` asks the channel for a fresh reader: fail the read after it (`callbacks.failed`), and the channel reads again with the new one. `callbacks.passed(number)` tells the client a number is no message, as an S2 command record is. A `MessageStream` may deliver a message again: the client drops any at or before the last one it delivered. A type the client has no reader for is logged to the console, and its messages are not read.
 
 ## Tests
 
