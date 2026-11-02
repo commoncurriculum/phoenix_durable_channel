@@ -161,7 +161,7 @@ defmodule PhoenixDurableChannel.Channel do
   end
 
   def push_durable(stream, socket, event, payload),
-    do: push_durable(stream, socket, event, payload, Map.get(socket.assigns, :phx_received, 0))
+    do: push_durable(stream, socket, event, payload, socket.assigns[:phx_received])
 
   def push_durable(stream, socket, event, payload, received) do
     number = stream.append(socket, event, payload, received)

@@ -15,7 +15,7 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
     do:
       Mongo.find_one(config()[:name], config()[:messages], %{topic: topic},
         sort: [number: -1],
-        projection: %{number: 1, received: 1}
+        projection: %{number: 1}
       ) || %{}
 
   def last(topic), do: find_newest(topic)["number"] || 0
@@ -72,7 +72,15 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
   def reader(socket), do: %{type: "phoenix", last: last(socket.topic), epoch: @epoch}
 
   @impl PhoenixDurableChannel.Stream
-  def received(socket), do: find_newest(socket.topic)["received"] || 0
+  def received(socket),
+    do:
+      (Mongo.find_one(
+         config()[:name],
+         config()[:messages],
+         %{topic: socket.topic, received: %{"$ne" => nil}},
+         sort: [number: -1],
+         projection: %{received: 1}
+       ) || %{})["received"] || 0
 
   def config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)
 end

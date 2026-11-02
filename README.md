@@ -80,7 +80,7 @@ A durable message carries its number in a sixth slot of Phoenix's V2 JSON frame,
 
 ### 2b. Pick a store, configure it and start it
 
-The store keeps one list per topic, the **stream**: the server's durable messages and the answers to the client's durable pushes, in one numbering, so the client reads what it missed of both the same way. Every message also carries how many of the client's pushes the server had handled when it was appended, so the last message says where the client's pushes got to.
+The store keeps one list per topic, the **stream**: the server's durable messages and the answers to the client's durable pushes, in one numbering, so the client reads what it missed of both the same way. Every message a durable channel appends also carries how many of the client's pushes the server had handled then, so the last message with that count says where the client's pushes got to.
 
 | Store                                         | Add to `deps`                                                                               | Start in your supervision tree                 | The client reads the server's messages              |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------- |
@@ -218,7 +218,7 @@ A durable push is answered `"timeout"` only when its channel is closed (`channel
 
 ### 2e. Deploying it
 
-- **Pages still on phoenix.js keep working.** They speak V2 frames without a sixth slot, which the serializer reads as before, and channels they join without `phx_durable` behave as plain Phoenix channels: `push_durable/3` still appends to the stream, and pushes the message to them as a plain push. So do clients on Phoenix's V1 serializer.
+- **Pages still on phoenix.js keep working.** They speak V2 frames without a sixth slot, which the serializer reads as before, and channels they join without `phx_durable` behave as plain Phoenix channels: `push_durable/3` still appends to the stream, with no count, and pushes the message to them as a plain push. So do clients on Phoenix's V1 serializer.
 - **A new page that reaches an old pod waits.** An old pod answers its durable join without `phx_durable: true`; the client treats that join as not joined, keeps its durable pushes, and joins again after a backoff until a pod with this library answers.
 - **Upgrading from a version of this library that answered the durable join with `phx_reader` is a breaking change.** This version answers `phx_durable: true` and pushes `phx_reader` after the join. A page loaded before the deploy treats the new reply as not joined and joins again until it is reloaded, its durable pushes waiting. Deploy it when pages can be reloaded, or reload them.
 - **Upgrading from a version of this library whose durable pushes carried no epoch is a breaking change.** A page loaded before the deploy can't decode a push with an epoch, so it gets none of its durable messages from a new pod; a new page reading through the channel from a pod still on that version delivers none of them either, firing `phx_skipped` and logging that the store no longer has them. The old page's client throws a `ParseError` for each push it can't decode. Deploy the server and the client together when pages can be reloaded, or reload them.
@@ -248,7 +248,7 @@ Both directions are one list: the topic's stream.
 
 **The client's durable pushes:**
 
-- After every join the client sends `phx_sync`, and the server replies `{received}`: how many of the client's pushes it has handled, from the stream's last message.
+- After every join the client sends `phx_sync`, and the server replies `{received}`: how many of the client's pushes it has handled, from the stream's last message with a count.
 - The server reads `received` once, at the join, and counts on from it in the channel's assigns: the join makes its process the only one taking the client's pushes. A stream reset while the process runs changes nothing until the next join, which reads it again.
 - The client numbers its pushes on from there and sends them in order. The server runs push n and appends its answer, a `phx_reply` message `{number, status, response}`, with `received` n in the same append, so the count and the answer are written together, as Kafka Streams commits its input offset with its output. The client reads the answer like any other durable message.
 - After a rejoin the client keeps waiting on the pushes at or below `received`, whose answers are in the stream, and numbers the rest on from `received` + 1 and sends them again. A push numbered at or below the count is not run again.
@@ -268,7 +268,7 @@ Both directions are one list: the topic's stream.
 
 ## Stores
 
-One behaviour, `PhoenixDurableChannel.Stream`: `append/4` numbers and keeps a message with the count of the client's pushes handled; `received/1` reads that count from the last message; `reader/1` is how the client reads them, pushed after the join as `phx_reader`, so the client needs no configuration of its own.
+One behaviour, `PhoenixDurableChannel.Stream`: `append/4` numbers and keeps a message with the count of the client's pushes handled; `received/1` reads that count from the last message that has one; `reader/1` is how the client reads them, pushed after the join as `phx_reader`, so the client needs no configuration of its own.
 
 | Store            | Where                                                                    | `phx_reader`                                          |
 | ---------------- | ------------------------------------------------------------------------ | ----------------------------------------------------- |
@@ -289,7 +289,7 @@ A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3
 **Read from the store's own protocol** (`S2`, `DurableStreams`):
 
 - Each topic is one stream of the same name, and each token reads only that stream. A store that refuses the token (401 or 403) makes the client ask the channel for a fresh reader (`phx_reader`) and read again.
-- S2 record `seq_num` n is message n + 1. A command record, such as the trim S2 appends when a stream is deleted, takes a number but is no message: the client passes it.
+- S2 record `seq_num` n is message n + 1. A command record, such as the trim S2 appends when a stream is deleted, takes a number but is no message: the client passes it. `received/1` reads back from the tail 16 records at a time to the last message with a count.
 - Durable Streams offsets are opaque, so each message carries its number, `phx_reader` gives the offset where `last` ends, a read that fails starts again at the offset where it last got to, and the server numbers on from the stream's last with `Stream-Seq`, which the store refuses to repeat, so two nodes never write the same number.
 - A stream that is deleted and made again, or trimmed past where a client got to, is not noticed, and a deleted one counts the client's pushes from 0 again, so pushes it already ran run again: delete a topic's stream only when no client will read it again.
 

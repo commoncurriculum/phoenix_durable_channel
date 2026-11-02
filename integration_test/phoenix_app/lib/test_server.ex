@@ -436,6 +436,17 @@ defmodule TestServer.DurableChannel do
     {:reply, :ok, socket}
   end
 
+  def handle_in("trim_nothing", _payload, socket) do
+    trim = %S2.V1.AppendRecord{
+      headers: [%S2.V1.Header{name: "", value: "trim"}],
+      body: <<0::64>>
+    }
+
+    case S2.append(PhoenixDurableChannel.Stream.S2.config()[:name], socket.topic, [trim]) do
+      {:ok, _ack} -> {:reply, :ok, socket}
+    end
+  end
+
   def handle_in("publish_silently", %{"body" => body}, socket) do
     number =
       durable_stream(socket).append(socket, "update", %{body: body}, socket.assigns.phx_received)

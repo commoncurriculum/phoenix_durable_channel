@@ -3,7 +3,7 @@ defmodule PhoenixDurableChannel.Stream do
               socket :: Phoenix.Socket.t(),
               event :: String.t(),
               payload :: map(),
-              received :: non_neg_integer()
+              received :: non_neg_integer() | nil
             ) :: pos_integer()
 
   @callback received(socket :: Phoenix.Socket.t()) :: non_neg_integer()

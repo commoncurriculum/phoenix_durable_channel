@@ -327,6 +327,29 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
     })
   })
 
+  test("a channel joined without durable messages appends no count, so a durable join after it counts on however many it appended", async () => {
+    const name = durableTopic("plain-count")
+    const socket = openSocket("/socket", fast)
+    socket.connect()
+    const durable = socket.channel(name, params, { durable: true })
+    await join(durable)
+    expect(await answer(durable.push("action", { body: "first" }, { durable: true }))).toEqual({
+      status: "ok",
+      response: { body: "first" },
+    })
+    await answer(durable.leave())
+
+    const plain = socket.channel(name, params)
+    await join(plain)
+    for (const body of Array.from({ length: 40 }, (_, index) => `plain ${index}`))
+      await answer(plain.push("publish", { body }))
+    await answer(plain.leave())
+
+    const again = socket.channel(name, params, { durable: true })
+    await join(again)
+    expect(await ledger(again)).toMatchObject({ received: 1 })
+  })
+
   test("durable messages are all sent at once and answered in order", async () => {
     const socket = openSocket("/socket", fast)
     socket.connect()
@@ -807,4 +830,23 @@ test("a durable request on a channel joined without durable messages, or a read 
   const elsewhere = socket.channel(durableTopic("s2"), { stream: "s2" }, { durable: true })
   await join(elsewhere)
   expect(await answer(elsewhere.push("phx_read", { after: 0 }))).toEqual(invalid)
+})
+
+test("an S2 command record at the stream's tail leaves the count where the last message put it", async () => {
+  const name = durableTopic("trimmed")
+  const params = { stream: "s2" }
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(name, params, { durable: true })
+  await join(channel)
+  expect(await answer(channel.push("action", { body: "first" }, { durable: true }))).toEqual({
+    status: "ok",
+    response: { body: "first" },
+  })
+  expect((await answer(channel.push("trim_nothing"))).status).toBe("ok")
+  await answer(channel.leave())
+
+  const again = socket.channel(name, params, { durable: true })
+  await join(again)
+  expect(await ledger(again)).toEqual({ received: 1, sent: 2 })
 })

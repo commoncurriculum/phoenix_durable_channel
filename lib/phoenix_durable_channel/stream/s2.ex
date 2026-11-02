@@ -1,6 +1,8 @@
 defmodule PhoenixDurableChannel.Stream.S2 do
   @behaviour PhoenixDurableChannel.Stream
 
+  @read_back 16
+
   @impl PhoenixDurableChannel.Stream
   def append(socket, event, payload, received) do
     record = %S2.V1.AppendRecord{
@@ -63,22 +65,31 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   end
 
   @impl PhoenixDurableChannel.Stream
-  def received(socket) do
-    case S2.read(config()[:name], socket.topic, tail_offset: 1, count: 1, clamp: true) do
-      {:ok, %S2.V1.ReadBatch{records: [record]}} ->
-        case Jason.decode(record.body) do
-          {:ok, %{"received" => received}} -> received
-          _command -> 0
-        end
+  def received(socket), do: received(socket.topic, last(socket.topic))
 
-      {:ok, %S2.V1.ReadBatch{records: []}} ->
-        0
+  def received(_stream, 0), do: 0
 
-      {:error, %S2.Error{status: 416}} ->
-        0
+  def received(stream, before) do
+    start = max(before - @read_back, 0)
+
+    case S2.read(config()[:name], stream, seq_num: start, count: before - start, clamp: true) do
+      {:ok, %S2.V1.ReadBatch{records: records}} ->
+        counts =
+          Enum.flat_map(records, fn record ->
+            case Jason.decode(record.body) do
+              {:ok, %{"received" => received}}
+              when is_integer(received) and record.seq_num < before ->
+                [received]
+
+              _no_count ->
+                []
+            end
+          end)
+
+        if counts == [], do: received(stream, start), else: List.last(counts)
 
       {:error, error} ->
-        raise "S2 refused a read of #{socket.topic}: #{inspect(error)}"
+        raise "S2 refused a read of #{stream}: #{inspect(error)}"
     end
   end
 

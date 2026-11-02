@@ -136,7 +136,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
       |> Jason.decode!()
       |> Enum.reduce(kept, fn message, kept ->
         if message["number"] > kept.last,
-          do: %{kept | last: message["number"], received: message["received"] || 0},
+          do: %{kept | last: message["number"], received: message["received"] || kept.received},
           else: kept
       end)
 

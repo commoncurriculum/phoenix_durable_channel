@@ -28,7 +28,7 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     messages =
       Enum.take([%{number: number, event: event, payload: payload} | kept.messages], state.kept)
 
-    put(topic, %{kept | latest: number, messages: messages, received: received})
+    put(topic, %{kept | latest: number, messages: messages, received: received || kept.received})
 
     {:reply, number, state}
   end
