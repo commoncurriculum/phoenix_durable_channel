@@ -1,4 +1,4 @@
-import { and, assign, enqueueActions, fromCallback, setup } from "xstate"
+import { and, assign, enqueueActions, fromCallback, not, setup } from "xstate"
 import { backoff, ignore, type Data } from "../actors"
 import type { Position, PublishedReader, Resume, StreamMessage } from "../stream"
 
@@ -10,6 +10,7 @@ export type ReaderEvent =
   | { type: "FAILED" }
   | { type: "READ_REPLY"; read: number; sent: number; epoch: string }
   | { type: "READ_REFUSED"; read: number }
+  | { type: "AHEAD" }
   | { type: "CHANNEL_JOINED" }
   | { type: "CHANNEL_LEFT" }
   | { type: "STOP" }
@@ -135,6 +136,7 @@ export const readerMachine = setup({
             REACHED: {
               actions: assign({
                 from: ({ context, event }) => ({ ...context.from, resume: event.resume }),
+                tries: 0,
               }),
             },
             FAILED: "backingOff",
@@ -169,6 +171,7 @@ export const readerMachine = setup({
                 guard: "isThisRead",
                 target: "live",
                 actions: enqueueActions(({ context, event, enqueue }) => {
+                  if (event.sent < context.from.after) enqueue.raise({ type: "AHEAD" })
                   const unseen = [...context.held.values()].filter(
                     (message) => message.number > context.from.after,
                   )
@@ -181,7 +184,7 @@ export const readerMachine = setup({
                     type: "advance",
                     params: { next: event.sent + 1, after: event.sent, message: null },
                   })
-                  enqueue.assign({ held: new Map() })
+                  enqueue.assign({ tries: 0 })
                 }),
               },
             ],
@@ -189,10 +192,12 @@ export const readerMachine = setup({
           },
         },
         live: {
+          initial: "inLine",
           on: {
             MESSAGE: [
               {
                 guard: "isNextInLine",
+                target: ".inLine",
                 actions: {
                   type: "advance",
                   params: ({ event }) => ({
@@ -202,8 +207,15 @@ export const readerMachine = setup({
                   }),
                 },
               },
-              { guard: "isNext", target: "backingOff" },
+              { target: "backingOff" },
             ],
+            AHEAD: ".ahead",
+          },
+          states: {
+            inLine: {},
+            ahead: {
+              on: { MESSAGE: { guard: not("isNext") } },
+            },
           },
         },
         backingOff: {

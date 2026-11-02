@@ -663,6 +663,25 @@ test("a channel reads through itself only while joined: rejoins the server refus
   expect((await counts()).reads).toBe(2)
 })
 
+test("a store that numbers afresh while the channel stays joined is read again from its start", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("afresh"), {}, { durable: true })
+  const seen = updates(channel)
+  const skipped: Array<unknown> = []
+  channel.on("phx_skipped", (payload) => skipped.push(payload))
+  await join(channel)
+  for (const body of ["1", "2"]) await answer(channel.push("publish", { body }))
+  await waitFor(() => seen.length === 2)
+
+  await answer(channel.push("reset"))
+  for (const body of ["other 1", "other 2", "other 3"])
+    await answer(channel.push("publish", { body }))
+  await waitFor(() => seen.length === 5)
+  expect(seen).toEqual(["1", "2", "other 1", "other 2", "other 3"])
+  expect(skipped).toEqual([])
+})
+
 test("a live message at or before an `after` beyond the stream's last number is ignored, costs no read, and the next one is delivered", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()

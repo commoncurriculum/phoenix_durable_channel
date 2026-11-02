@@ -23,12 +23,11 @@ VARIABLES
     toServer,
     toClient,
     faults,
-    startAt,
-    rereadForOld
+    startAt
 
 vars == <<at, started, from, left, read, held, delivered, nodeEpoch, newEpoch,
-          sent, forgotten, serving, toServer, toClient, faults, startAt, rereadForOld>>
-client == <<started, from, left, read, held, delivered, startAt, rereadForOld>>
+          sent, forgotten, serving, toServer, toClient, faults, startAt>>
+client == <<started, from, left, read, held, delivered, startAt>>
 store == <<nodeEpoch, newEpoch, sent, forgotten>>
 
 Init ==
@@ -48,7 +47,6 @@ Init ==
     /\ toClient = <<>>
     /\ faults = 0
     /\ startAt = [after |-> 0, e |-> 0]
-    /\ rereadForOld = FALSE
 
 Max(a, b) == IF a > b THEN a ELSE b
 Min(a, b) == IF a < b THEN a ELSE b
@@ -77,7 +75,7 @@ Joins ==
                    /\ from' = f
                    /\ startAt' = f
     /\ UNCHANGED <<left, read, held, delivered, store, serving, toServer,
-                   toClient, faults, rereadForOld>>
+                   toClient, faults>>
 
 Lost ==
     /\ at' = 0
@@ -91,7 +89,7 @@ Drops ==
     /\ at # 0
     /\ faults' = faults + 1
     /\ Lost
-    /\ UNCHANGED <<started, from, left, held, delivered, store, startAt, rereadForOld>>
+    /\ UNCHANGED <<started, from, left, held, delivered, store, startAt>>
 
 ---------------------------------------------------------------------------
 
@@ -104,7 +102,7 @@ StartsRead ==
     /\ held' = {}
     /\ toServer' = Append(toServer, [id |-> 1, after |-> from.after])
     /\ UNCHANGED <<at, started, from, left, delivered, store, serving, toClient,
-                   faults, startAt, rereadForOld>>
+                   faults, startAt>>
 
 ReadTimesOut ==
     /\ Broken = "readTimeout"
@@ -113,7 +111,7 @@ ReadTimesOut ==
     /\ read' = "idle"
     /\ serving' = [serving EXCEPT !.id = 0]
     /\ UNCHANGED <<at, started, from, left, held, delivered, store, toServer,
-                   toClient, faults, startAt, rereadForOld>>
+                   toClient, faults, startAt>>
 
 Deliver(m) ==
     /\ delivered' = Append(delivered, [e |-> m.e, n |-> m.n])
@@ -126,19 +124,21 @@ MessageArrives ==
     /\ LET m == Head(toClient)
        IN CASE read = "waiting" /\ Broken = "deliverOnArrival" ->
                   /\ Deliver(m)
-                  /\ UNCHANGED <<read, held, rereadForOld>>
+                  /\ UNCHANGED <<read, held>>
             [] read = "waiting" ->
                   /\ held' = held \cup {m.n}
-                  /\ UNCHANGED <<read, from, delivered, rereadForOld>>
-            [] read = "live" /\ (m.n = from.after + 1
+                  /\ UNCHANGED <<read, from, delivered>>
+            [] read \in {"live", "ahead"} /\ (m.n = from.after + 1
                                   \/ (Broken = "noGapCheck" /\ m.n > from.after)) ->
                   /\ Deliver(m)
-                  /\ UNCHANGED <<read, held, rereadForOld>>
-            [] read = "live" /\ (m.n > from.after \/ Broken = "endsOnOld") ->
+                  /\ read' = "live"
+                  /\ UNCHANGED held
+            [] m.n <= from.after /\ (read = "ahead" \/ Broken = "dropsOldWhileLive") ->
+                  UNCHANGED <<read, from, held, delivered>>
+            [] read \in {"live", "ahead"} ->
                   /\ read' = "idle"
-                  /\ rereadForOld' = (rereadForOld \/ m.n <= from.after)
                   /\ UNCHANGED <<from, held, delivered>>
-            [] OTHER -> UNCHANGED <<read, from, held, delivered, rereadForOld>>
+            [] OTHER -> UNCHANGED <<read, from, held, delivered>>
     /\ UNCHANGED <<at, started, left, store, serving, toServer, faults, startAt>>
 
 ReplyArrives ==
@@ -163,10 +163,10 @@ ReplyArrives ==
                                        Max(IF unseen = {} THEN from.after
                                            ELSE Max(from.after, MaxOf(unseen)), m.sent)]
                   /\ held' = {}
-                  /\ read' = "live"
+                  /\ read' = IF m.sent < from.after THEN "ahead" ELSE "live"
                   /\ UNCHANGED left
             [] OTHER -> UNCHANGED <<from, left, read, held, delivered>>
-    /\ UNCHANGED <<at, started, store, serving, toServer, faults, startAt, rereadForOld>>
+    /\ UNCHANGED <<at, started, store, serving, toServer, faults, startAt>>
 
 ---------------------------------------------------------------------------
 
@@ -191,8 +191,8 @@ OtherAppends ==
         /\ n # at \/ serving # None
         /\ sent[nodeEpoch[n]] < MaxPublish
         /\ sent' = [sent EXCEPT ![nodeEpoch[n]] = @ + 1]
-    /\ UNCHANGED <<at, client, nodeEpoch, newEpoch, forgotten, serving, toServer, toClient,
-                   faults>>
+    /\ UNCHANGED <<at, client, nodeEpoch, newEpoch, forgotten, serving, toServer,
+                   toClient, faults>>
 
 StoreForgets ==
     /\ faults < MaxFaults
@@ -204,15 +204,15 @@ StoreForgets ==
 
 StoreStartsAgain ==
     /\ faults < MaxFaults
-    /\ \E n \in Nodes :
+    /\ \E n \in Nodes, underConnection \in BOOLEAN :
         /\ nodeEpoch' = [nodeEpoch EXCEPT ![n] = newEpoch]
-        /\ IF at = n
+        /\ IF at = n /\ ~(underConnection /\ read = "live" /\ from.after >= MaxPublish)
            THEN Lost
            ELSE UNCHANGED <<at, read, serving, toServer, toClient>>
     /\ newEpoch' = newEpoch + 1
     /\ faults' = faults + 1
     /\ UNCHANGED <<started, from, left, held, delivered, sent, forgotten,
-                   startAt, rereadForOld>>
+                   startAt>>
 
 ServerTakesRead ==
     /\ at # 0
@@ -262,7 +262,8 @@ DeliveredOnceInOrder ==
     \A i, j \in DOMAIN delivered :
         (i < j /\ delivered[i].e = delivered[j].e) => delivered[i].n < delivered[j].n
 
-Reached(e) == IF e = from.e THEN from.after ELSE left[e]
+Reached(e) == Max(IF e = from.e THEN from.after ELSE left[e],
+                  MaxOf({d.n : d \in {x \in Range(delivered) : x.e = e}} \cup {0}))
 
 NothingLostButForgotten ==
     started =>
@@ -277,8 +278,9 @@ NothingAtOrBeforeAfter ==
     \A i \in DOMAIN delivered :
         delivered[i].e = startAt.e => delivered[i].n > startAt.after
 
-NoReadForAnOldMessage == ~rereadForOld
-
-CatchesUp == <>[](at # 0 /\ read = "live" /\ from.e = Here /\ from.after >= sent[Here])
+CatchesUp == <>[](/\ at # 0
+                  /\ read \in {"live", "ahead"}
+                  /\ (from.e = Here \/ sent[Here] = 0)
+                  /\ from.after >= sent[Here])
 
 ==============================================================================
