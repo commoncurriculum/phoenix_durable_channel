@@ -1,0 +1,176 @@
+[
+  {
+    "fault": "connection drops",
+    "what": "The client's connection closes at any step; frames in flight either way are lost.",
+    "model": [
+      "PhoenixDurableChannel.ConnectionDrops",
+      "DurableMessages.Drops",
+      "ChannelRead.Drops",
+      "SocketBuffer.Drops"
+    ],
+    "jepsen": ["partition", "cut-off-clients"],
+    "tests": ["a reply lost with the connection is sent again, handled once, and answered the same"]
+  },
+  {
+    "fault": "connection goes silent",
+    "what": "A half-open connection: nothing arrives and nothing closes.",
+    "model": [],
+    "jepsen": ["cut-off-clients"],
+    "tests": ["heartbeats, and closes a connection whose heartbeat goes unanswered"]
+  },
+  {
+    "fault": "channel process crashes",
+    "what": "The server's channel process dies at any step, before or after appending what it ran.",
+    "model": ["PhoenixDurableChannel.ServerChannelCrashes", "DurableMessages.ServerCrashes"],
+    "jepsen": ["kill"],
+    "tests": ["a crashed channel errors, fails its in-flight pushes at once, and rejoins"]
+  },
+  {
+    "fault": "handler raises",
+    "what": "The app's handle_in raises on a durable push; its crashed answer can be lost with the connection.",
+    "model": [],
+    "jepsen": [],
+    "tests": []
+  },
+  {
+    "fault": "handler cannot take a push",
+    "what": "The app's handle_in returns {:retry, reason, socket}.",
+    "model": ["DurableMessages.ServerCannotTake"],
+    "jepsen": [],
+    "tests": ["a message the server could not take is sent again, with the ones after it, in order"]
+  },
+  {
+    "fault": "handler stops the channel",
+    "what": "The app's handle_in returns a stop.",
+    "model": [],
+    "jepsen": [],
+    "tests": ["a durable push whose handler stops the channel is answered and recorded"]
+  },
+  {
+    "fault": "node killed or paused",
+    "what": "A whole node dies or stalls with channel processes on it.",
+    "model": ["DurableMessages.ReplaceKills"],
+    "jepsen": ["kill", "pause"],
+    "tests": []
+  },
+  {
+    "fault": "two processes for one topic",
+    "what": "A rejoin reaches a new process while the old connection's process still runs pushes.",
+    "model": [
+      "DurableMessages.OldTakes",
+      "DurableMessages.OldRecords",
+      "PhoenixDurableChannel.OldRuns"
+    ],
+    "jepsen": ["partition", "cut-off-clients"],
+    "tests": [
+      "a message the old connection's process is still running when the client rejoins runs once"
+    ]
+  },
+  {
+    "fault": "late append from a killed process",
+    "what": "A replaced process is killed after 5 s, but its append, already on its way, lands after the new process read the count.",
+    "model": [],
+    "jepsen": [],
+    "tests": []
+  },
+  {
+    "fault": "late join from an abandoned connection",
+    "what": "A join the client gave up on reaches the server after a newer one.",
+    "model": ["DurableMessages.Replaced"],
+    "jepsen": [],
+    "tests": [
+      "a late join from a connection the client left replaces its channel, and the client rejoins"
+    ]
+  },
+  {
+    "fault": "sync gets no answer",
+    "what": "The phx_sync reply is lost or late.",
+    "model": ["DurableMessages.SyncTimesOut"],
+    "jepsen": [],
+    "tests": [
+      "a sync with no answer is tried again; a durable push and a read die with their channel"
+    ]
+  },
+  {
+    "fault": "store forgets messages",
+    "what": "The store drops messages a client has not read, by retention, a size cap or a restart, at any step.",
+    "model": ["DurableMessages.Forgets", "ChannelRead.StoreForgets", "StreamReader.StoreForgets"],
+    "jepsen": [],
+    "tests": ["a durable push whose answer the client skipped while joined is answered reply_lost"]
+  },
+  {
+    "fault": "store numbers afresh",
+    "what": "The store loses a topic's stream and numbers it from 1 again (a new epoch, a deleted stream, a reset count).",
+    "model": ["ChannelRead.StoreStartsAgain", "DurableMessages.LedgerResets"],
+    "jepsen": [],
+    "tests": [
+      "a store that numbers afresh while the channel stays joined is read again from its start"
+    ]
+  },
+  {
+    "fault": "store read cut short",
+    "what": "A store read returns fewer records than asked, by a byte cap.",
+    "model": [],
+    "jepsen": [],
+    "tests": [
+      "the count is read from the newest message that has one, past S2 reads cut short by size"
+    ]
+  },
+  {
+    "fault": "store read fails",
+    "what": "A store read errors, ends, or the store cannot be reached.",
+    "model": ["StreamReader.ReadEnds", "StreamReader.ReadRefused"],
+    "jepsen": [],
+    "tests": ["while the store cannot be reached, the channel keeps trying and stays joined"]
+  },
+  {
+    "fault": "read token expires",
+    "what": "The store refuses the client's read token.",
+    "model": ["StreamReader.TokenExpires"],
+    "jepsen": [],
+    "tests": [
+      "a read token that expired is fetched again, and asked for again when the answer is late"
+    ]
+  },
+  {
+    "fault": "store command records",
+    "what": "The store puts records that are no message in the stream (an S2 trim or fence).",
+    "model": [],
+    "jepsen": [],
+    "tests": [
+      "an S2 command record at the stream's tail leaves the count where the last message put it"
+    ]
+  },
+  {
+    "fault": "other writers on the topic",
+    "what": "A plain channel or the app appends to the topic's stream with no count.",
+    "model": ["ChannelRead.OtherAppends"],
+    "jepsen": [],
+    "tests": [
+      "a channel joined without durable messages appends no count, so a durable join after it counts on however many it appended"
+    ]
+  },
+  {
+    "fault": "nodes append at once",
+    "what": "Two nodes append to one topic's stream at the same time.",
+    "model": ["DurableStreamsNumbering.Posts"],
+    "jepsen": ["partition"],
+    "tests": [
+      "the server names a Durable Streams store, and a node whose next number another node took goes on from the store's last"
+    ]
+  },
+  {
+    "fault": "LongPoll session lost",
+    "what": "The server forgets a LongPoll session (HTTP 410).",
+    "model": [],
+    "jepsen": ["partition"],
+    "tests": ["a lost LongPoll session closes the connection, so channels rejoin on the new one"]
+  },
+  {
+    "fault": "client reloads",
+    "what": "A new client joins a topic an earlier client used, numbering its pushes from 1.",
+    "model": [],
+    "jepsen": [],
+    "tests": []
+  }
+]

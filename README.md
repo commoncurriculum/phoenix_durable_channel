@@ -348,4 +348,12 @@ A push may be in the stream twice in a row, when its channel process died betwee
 verification/check.sh
 ```
 
-TLA+ models of the socket, channel and push lifecycle, the client's durable pushes, reading the server's durable messages through the channel and from a store, the socket's push buffer, and numbering on Durable Streams. The XState machines are in `assets/js/phoenix_durable_channel/machines/`, one per file. The `verify-phoenix-durable-channel` skill in `.agents/skills` lists the requirements every change is checked against, these models among them.
+TLA+ models of the socket, channel and push lifecycle, the client's durable pushes, reading the server's durable messages through the channel and from a store, the socket's push buffer, and numbering on Durable Streams. The XState machines are in `assets/js/phoenix_durable_channel/machines/`, one per file. ## Faults
+
+```sh
+pnpm faults
+```
+
+`verification/faults.json` lists every fault the library must survive, and for each one the TLA+ actions that model it, the Jepsen faults that cause it and the tests that cause it. `pnpm faults` fails on a name that does not exist and on a fault with nothing in the model, Jepsen or the tests.
+
+The `verify-phoenix-durable-channel` skill in `.agents/skills` lists the requirements every change is checked against, these models among them.
