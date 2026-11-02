@@ -121,12 +121,13 @@
 (defn topic [client] (str "jepsen:" client))
 
 (defmulti read-stream
-  "The `added` payloads kept in `client`'s stream, in order, as [value position]."
+  "The `added` payloads kept in `client`'s stream, in order, as [value position]. The stream
+  also holds the answers to the client's pushes, which are left out."
   (fn [test _client] (:durable-store test)))
 
 (defmethod read-stream "mongo" [_test client]
   (->> (docker! "exec" (container-name "mongo") "mongosh" "--quiet" "jepsen" "--eval"
-                (str "db.messages.find({topic: '" (topic client) "'}).sort({number: 1})"
+                (str "db.messages.find({topic: '" (topic client) "', event: 'added'}).sort({number: 1})"
                      ".forEach(m => print(m.payload.value + '|' + m.payload.position))"))
        str/split-lines
        (remove str/blank?)
@@ -157,8 +158,9 @@
           header #(.orElse (.firstValue (.headers response) %) nil)]
       (when-not (= 200 (.statusCode response))
         (throw (ex-info (str "Durable Streams read " (.statusCode response) ": " (.body response)) {})))
-      (let [payloads (into payloads (map #(let [payload (:payload %)] [(:value payload) (:position payload)])
-                                         (json/parse-string (.body response) true)))]
+      (let [payloads (into payloads (comp (filter #(= "added" (:event %)))
+                                          (map #(let [payload (:payload %)] [(:value payload) (:position payload)])))
+                           (json/parse-string (.body response) true))]
         (if (= "true" (header "stream-up-to-date"))
           payloads
           (recur (header "stream-next-offset") payloads))))))
@@ -174,8 +176,9 @@
       (case status
         416 payloads
         200 (let [records (:records (json/parse-string body true))
-                  more (mapv #(let [payload (:payload (json/parse-string (:body %) true))]
-                                [(:value payload) (:position payload)])
+                  more (into [] (comp (map #(json/parse-string (:body %) true))
+                                      (filter #(= "added" (:event %)))
+                                      (map #(let [payload (:payload %)] [(:value payload) (:position payload)])))
                              records)]
               (if (empty? records)
                 payloads
