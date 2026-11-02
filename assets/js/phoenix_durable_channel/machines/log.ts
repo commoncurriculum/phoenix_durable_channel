@@ -1,7 +1,6 @@
 import { assign, emit, enqueueActions, setup } from "xstate"
 import { backoff, type Data } from "../actors"
 import { DURABLE_WINDOW } from "../constants"
-import type { Reply } from "../reply"
 import { isNotTaken } from "../wire"
 
 export interface Sent {
@@ -10,14 +9,14 @@ export interface Sent {
 }
 
 export interface Entry {
+  id: string
   event: string
   payload: unknown
-  reply: Reply
   sent: Sent | null
 }
 
 type LogEvent =
-  | { type: "PUSH"; event: string; payload: unknown; reply: Reply }
+  | { type: "PUSH"; id: string; event: string; payload: unknown }
   | { type: "REPLY"; ref: string | null; status: string; response: unknown }
   | { type: "CHANNEL_JOINED" }
   | { type: "CHANNEL_LEFT" }
@@ -28,7 +27,7 @@ type LogEvent =
 export type LogEmitted =
   | { type: "sync" }
   | { type: "send"; event: string; payload: unknown; sent: Sent }
-  | { type: "answer"; reply: Reply; status: "ok" | "error" | "timeout"; response: unknown }
+  | { type: "answer"; id: string; status: "ok" | "error" | "timeout"; response: unknown }
 
 type LogContext = Data<{
   queue: ReadonlyArray<Entry>
@@ -92,7 +91,7 @@ export const logMachine = setup({
       for (const entry of answered(context, event))
         enqueue.emit({
           type: "answer",
-          reply: entry.reply,
+          id: entry.id,
           status: event.status === "ok" ? "ok" : "error",
           response: event.response,
         })
@@ -115,7 +114,7 @@ export const logMachine = setup({
     }),
     abandon: enqueueActions(({ context, enqueue }) => {
       for (const entry of context.queue)
-        enqueue.emit({ type: "answer", reply: entry.reply, status: "timeout", response: undefined })
+        enqueue.emit({ type: "answer", id: entry.id, status: "timeout", response: undefined })
       enqueue.assign({ queue: [] })
     }),
   },
@@ -177,7 +176,7 @@ export const logMachine = setup({
         PUSH: {
           actions: emit(({ event }) => ({
             type: "answer" as const,
-            reply: event.reply,
+            id: event.id,
             status: "timeout" as const,
             response: undefined,
           })),

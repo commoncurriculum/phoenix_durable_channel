@@ -23,14 +23,21 @@ export interface MessageStream {
   read(from: Position, callbacks: ReadCallbacks): () => void
 }
 
+export interface Resume {
+  number: number
+  offset: string
+}
+
 export interface Position {
   after: number
   epoch: string
+  resume: Resume | null
 }
 
 export interface ReadCallbacks {
   deliver(message: StreamMessage): void
   moved(epoch: string): void
+  reached(resume: Resume): void
   failed(error: unknown): void
 }
 
@@ -82,7 +89,7 @@ export interface DurableStreamOptions {
   url: string
   token?: Token
   refused?: () => Promise<void>
-  resume?: { number: number; offset: string }
+  resume?: Resume
 }
 
 const unchanged = (error: unknown) => error
@@ -172,14 +179,12 @@ export class S2Stream implements MessageStream {
 }
 
 export class DurableStream implements MessageStream {
-  private resume: { number: number; offset: string } | null
-
-  constructor(readonly options: DurableStreamOptions) {
-    this.resume = options.resume ?? null
-  }
+  constructor(readonly options: DurableStreamOptions) {}
 
   read(from: Position, callbacks: ReadCallbacks): () => void {
-    const offset = this.resume?.number === from.after ? this.resume.offset : "-1"
+    const offset =
+      [from.resume, this.options.resume].find((resume) => resume?.number === from.after)?.offset ??
+      "-1"
     const url = `${this.options.url}?offset=${encodeURIComponent(offset)}&live=sse`
     return readEvents(
       url,
@@ -191,7 +196,7 @@ export class DurableStream implements MessageStream {
           Effect.sync(() => {
             if (event.event === "control") {
               const { streamNextOffset } = decodeDurableStreamsControl(event.data)
-              this.resume = { number: last, offset: streamNextOffset }
+              callbacks.reached({ number: last, offset: streamNextOffset })
               return last
             }
             let latest = last
@@ -209,12 +214,7 @@ export class DurableStream implements MessageStream {
 
 export interface ChannelReads {
   read(after: number): Push
-  listen(listener: ChannelListener): () => void
-}
-
-export interface ChannelListener {
-  message(message: StreamMessage): void
-  lost(): void
+  listen(listener: (message: StreamMessage) => void): () => void
 }
 
 export class ChannelStream implements MessageStream {
@@ -234,10 +234,7 @@ export class ChannelStream implements MessageStream {
     const send = (event: EventFromLogic<typeof channelReadMachine>) => {
       if (actor.getSnapshot().status === "active") actor.send(event)
     }
-    const stopListening = this.channel.listen({
-      message: (message) => send({ type: "MESSAGE", message }),
-      lost: () => send({ type: "LOST" }),
-    })
+    const stopListening = this.channel.listen((message) => send({ type: "MESSAGE", message }))
     this.channel
       .read(from.after)
       .receive("ok", (response) => send({ type: "READ_REPLY", ...decodeReadReply(response) }))

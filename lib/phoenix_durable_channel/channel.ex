@@ -35,8 +35,8 @@ defmodule PhoenixDurableChannel.Channel do
           def handle_info(:phx_replaced, socket),
             do: PhoenixDurableChannel.Channel.replaced(socket)
 
-          def handle_info({:phx_durable_joined, ledger_for}, socket),
-            do: PhoenixDurableChannel.Channel.joined(ledger_for, socket)
+          def handle_info({:phx_durable_joined, ledger_for, stream_for}, socket),
+            do: PhoenixDurableChannel.Channel.joined(ledger_for, stream_for, socket)
 
           def handle_info(message, socket), do: super(message, socket)
         end
@@ -45,8 +45,8 @@ defmodule PhoenixDurableChannel.Channel do
           def handle_info(:phx_replaced, socket),
             do: PhoenixDurableChannel.Channel.replaced(socket)
 
-          def handle_info({:phx_durable_joined, ledger_for}, socket),
-            do: PhoenixDurableChannel.Channel.joined(ledger_for, socket)
+          def handle_info({:phx_durable_joined, ledger_for, stream_for}, socket),
+            do: PhoenixDurableChannel.Channel.joined(ledger_for, stream_for, socket)
 
           def handle_info(message, socket),
             do: PhoenixDurableChannel.Channel.unexpected_message(message, socket)
@@ -81,20 +81,28 @@ defmodule PhoenixDurableChannel.Channel do
       def join(topic, params, socket),
         do:
           PhoenixDurableChannel.Channel.join(
-            super(topic, params, socket),
             params,
             &durable_ledger/1,
-            &durable_stream/1
+            &durable_stream/1,
+            fn -> super(topic, params, socket) end
           )
 
-      def handle_in("phx_sync", _payload, socket),
+      def handle_in("phx_sync", _payload, %{assigns: %{phx_durable: true}} = socket),
         do: PhoenixDurableChannel.Channel.sync(socket)
 
-      def handle_in("phx_read", %{"after" => last}, socket),
-        do: PhoenixDurableChannel.Channel.read(durable_stream(socket), last, socket)
+      def handle_in("phx_read", %{"after" => last}, %{assigns: %{phx_durable: true}} = socket)
+          when is_integer(last) and last >= 0,
+          do: PhoenixDurableChannel.Channel.read(durable_stream(socket), last, socket)
 
-      def handle_in("phx_reader", _payload, socket),
+      def handle_in("phx_reader", _payload, %{assigns: %{phx_durable: true}} = socket),
         do: {:reply, {:ok, durable_stream(socket).reader(socket)}, socket}
+
+      def handle_in(event, _payload, socket) when event in ["phx_sync", "phx_read", "phx_reader"],
+        do: {:reply, {:error, %{reason: "invalid"}}, socket}
+
+      def handle_in(_event, {:durable, _number, _payload}, %{assigns: assigns} = socket)
+          when not is_map_key(assigns, :phx_durable),
+          do: {:reply, {:error, %{reason: "invalid"}}, socket}
 
       unquote(handle_in)
 
@@ -102,19 +110,26 @@ defmodule PhoenixDurableChannel.Channel do
     end
   end
 
-  def join({:ok, socket}, %{"phx_durable" => true} = params, ledger_for, stream_for),
-    do: join({:ok, %{}, socket}, params, ledger_for, stream_for)
+  def join(%{"phx_durable" => true}, ledger_for, stream_for, join) do
+    send(self(), {:phx_durable_joined, ledger_for, stream_for})
 
-  def join({:ok, reply, socket}, %{"phx_durable" => true}, ledger_for, stream_for)
-      when is_map(reply) do
-    send(self(), {:phx_durable_joined, ledger_for})
-    socket = Phoenix.Socket.assign(socket, phx_durable: true, phx_replies: %{})
-    {:ok, Map.put(reply, :phx_reader, stream_for.(socket).reader(socket)), socket}
+    case join.() do
+      {:ok, socket} ->
+        {:ok, %{phx_durable: true},
+         Phoenix.Socket.assign(socket, phx_durable: true, phx_replies: %{})}
+
+      {:ok, reply, socket} when is_map(reply) ->
+        {:ok, Map.put(reply, :phx_durable, true),
+         Phoenix.Socket.assign(socket, phx_durable: true, phx_replies: %{})}
+
+      result ->
+        result
+    end
   end
 
-  def join(result, _params, _ledger_for, _stream_for), do: result
+  def join(_params, _ledger_for, _stream_for, join), do: join.()
 
-  def joined(ledger_for, socket) do
+  def joined(ledger_for, stream_for, socket) do
     name = {__MODULE__, socket.topic}
 
     :global.trans({name, self()}, fn ->
@@ -139,6 +154,7 @@ defmodule PhoenixDurableChannel.Channel do
       :yes = :global.re_register_name(name, self())
     end)
 
+    Phoenix.Channel.push(socket, "phx_reader", stream_for.(socket).reader(socket))
     {:noreply, Phoenix.Socket.assign(socket, :phx_received, ledger_for.(socket).received(socket))}
   end
 
@@ -162,15 +178,24 @@ defmodule PhoenixDurableChannel.Channel do
   def push_durable(stream, socket, event, payload) do
     number = stream.append(socket, event, payload)
 
-    if function_exported?(stream, :since, 3),
+    if through_channel?(stream),
       do: Phoenix.Channel.push(socket, event, {:durable, number, payload})
 
     :ok
   end
 
+  def through_channel?(stream),
+    do: Code.ensure_loaded?(stream) and function_exported?(stream, :since, 3)
+
   def sync(socket), do: {:reply, {:ok, %{received: socket.assigns.phx_received}}, socket}
 
   def read(stream, last, socket) do
+    if through_channel?(stream),
+      do: read_pages(stream, last, socket),
+      else: {:reply, {:error, %{reason: "invalid"}}, socket}
+  end
+
+  def read_pages(stream, last, socket) do
     page = stream.since(socket, last, @page)
 
     Enum.each(page.messages, fn {number, event, payload} ->
@@ -178,7 +203,7 @@ defmodule PhoenixDurableChannel.Channel do
     end)
 
     if page.sent < page.latest,
-      do: read(stream, page.sent, socket),
+      do: read_pages(stream, page.sent, socket),
       else: {:reply, {:ok, %{sent: page.sent, epoch: page.epoch}}, socket}
   end
 

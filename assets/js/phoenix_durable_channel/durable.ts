@@ -11,18 +11,13 @@ import type { Message } from "./serializer"
 import {
   builtInReaders,
   ChannelStream,
-  type ChannelListener,
   type MessageStream,
   type PublishedReader,
   type ReaderFactory,
+  type StreamMessage,
 } from "./stream"
 import type { Params } from "./url"
-import {
-  decodeDurableJoinReply,
-  decodePublishedReader,
-  decodeSyncReply,
-  hasPublishedReader,
-} from "./wire"
+import { decodePublishedReader, decodeSyncReply, isDurableJoinReply } from "./wire"
 
 const unread: MessageStream = { read: () => ignore }
 
@@ -40,13 +35,14 @@ export interface DurableOptions {
 
 export class Durable implements ChannelExtension {
   readonly log: Log
-  private readonly reader: Actor<typeof readerMachine>
-  private readonly listeners = new Set<ChannelListener>()
+  private reader: Actor<typeof readerMachine> | null = null
+  private readonly replies = new Map<string, Reply>()
+  private readonly listeners = new Set<(message: StreamMessage) => void>()
   private readonly readers: Record<string, ReaderFactory>
 
   constructor(
     private readonly channel: DurableChannel,
-    options: DurableOptions,
+    private readonly options: DurableOptions,
     private readonly trigger: Trigger,
   ) {
     const { socket } = channel
@@ -82,27 +78,13 @@ export class Durable implements ChannelExtension {
               join_ref: channel.joinRef(),
               number: event.sent.number,
             })
-          case "answer":
-            return event.reply.answer(event.status, event.response)
+          case "answer": {
+            const reply = this.replies.get(event.id)
+            this.replies.delete(event.id)
+            return reply?.answer(event.status, event.response)
+          }
         }
       },
-    )
-    this.reader = startMachine(
-      readerMachine.provide({
-        actors: {
-          reading: fromCallback<ReaderEvent, ReadingInput, ReaderEvent>(({ input, sendBack }) =>
-            this.streamFor(input.published).read(input.from, {
-              deliver: (message) => sendBack({ type: "MESSAGE", message }),
-              moved: (epoch) => sendBack({ type: "MOVED", epoch }),
-              failed: () => sendBack({ type: "FAILED" }),
-            }),
-          ),
-          waitToRead: backoff((tries) => socket.rejoinAfterMs(tries)),
-        },
-      }),
-      { after: options.after ?? null },
-      ignore,
-      ({ message }) => trigger(message.event, message.payload),
     )
   }
 
@@ -111,55 +93,87 @@ export class Durable implements ChannelExtension {
   }
 
   refuses(response: unknown): boolean {
-    return !hasPublishedReader(response)
+    return !isDurableJoinReply(response)
   }
 
-  joined(response: unknown): void {
-    this.reader.send({ type: "PUBLISHED", reader: decodeDurableJoinReply(response).phx_reader })
+  joined(): void {
     this.log.actor.send({ type: "CHANNEL_JOINED" })
+    this.reader?.send({ type: "CHANNEL_JOINED" })
   }
 
   lost(): void {
     this.log.actor.send({ type: "CHANNEL_LEFT" })
-    for (const listener of this.listeners) listener.lost()
+    this.reader?.send({ type: "CHANNEL_LEFT" })
   }
 
   closed(): void {
     this.log.actor.send({ type: "CHANNEL_CLOSED" })
-    this.reader.send({ type: "STOP" })
+    this.reader?.send({ type: "STOP" })
   }
 
   push(event: string, payload: unknown): Reply {
     if (payload instanceof ArrayBuffer)
       throw new Error(`tried to push a durable '${event}' with a binary payload`)
     const reply = new Reply()
-    this.log.actor.send({ type: "PUSH", event, payload, reply })
+    const id = this.channel.socket.makeRef()
+    this.replies.set(id, reply)
+    this.log.actor.send({ type: "PUSH", id, event, payload })
     return reply
   }
 
   receive(message: Message): void {
     const { event, payload, ref, join_ref, number } = message
+    if (event === CHANNEL_EVENTS.reader) return this.published(decodePublishedReader(payload))
     if (number === undefined) return this.trigger(event, payload, ref, join_ref)
-    for (const listener of this.listeners) listener.message({ number, event, payload })
+    for (const listener of this.listeners) listener({ number, event, payload })
   }
 
   reply(ref: string | null, status: string, response: unknown): void {
     this.log.actor.send({ type: "REPLY", ref, status, response })
   }
 
+  private published(published: PublishedReader): void {
+    if (this.reader !== null) return this.reader.send({ type: "PUBLISHED", reader: published })
+    const { socket } = this.channel
+    this.reader = startMachine(
+      readerMachine.provide({
+        actors: {
+          reading: fromCallback<ReaderEvent, ReadingInput, ReaderEvent>(({ input, sendBack }) =>
+            this.streamFor(input.published).read(input.from, {
+              deliver: (message) => sendBack({ type: "MESSAGE", message }),
+              moved: (epoch) => sendBack({ type: "MOVED", epoch }),
+              reached: (resume) => sendBack({ type: "REACHED", resume }),
+              failed: () => sendBack({ type: "FAILED" }),
+            }),
+          ),
+          waitToRead: backoff((tries) => socket.rejoinAfterMs(tries)),
+        },
+      }),
+      { published, after: this.options.after ?? null },
+      ignore,
+      (event) => {
+        switch (event.type) {
+          case "deliver":
+            return this.trigger(event.message.event, event.message.payload)
+          case "skipped":
+            return socket.log(
+              "channel",
+              `${this.channel.topic} skipped durable messages ${event.after + 1} to ${event.next - 1}, which the store no longer has`,
+            )
+        }
+      },
+    )
+  }
+
   private streamFor(published: PublishedReader): MessageStream {
     const factory = this.readers[published.type]
     if (factory !== undefined)
       return factory(
-        () => this.latest(),
+        () => published,
         () => this.refresh(),
       )
     this.channel.socket.log("channel", `no reader for the store "${published.type}"`, published)
     return unread
-  }
-
-  private latest(): PublishedReader {
-    return this.reader.getSnapshot().context.published!
   }
 
   private refresh(): Promise<void> {
@@ -168,7 +182,7 @@ export class Durable implements ChannelExtension {
         this.channel
           .push(CHANNEL_EVENTS.reader)
           .receive("ok", (response) => {
-            this.reader.send({ type: "PUBLISHED", reader: decodePublishedReader(response) })
+            this.published(decodePublishedReader(response))
             resume(Effect.void)
           })
           .receive("timeout", () => resume(Effect.fail("timeout")))

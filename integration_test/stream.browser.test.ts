@@ -1,9 +1,12 @@
 import { expect, inject, test } from "vitest"
 import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
 import {
+  builtInReaders,
   DurableStream,
   S2Stream,
+  type Position,
   type PublishedReader,
+  type Resume,
   type StreamMessage,
 } from "../assets/js/phoenix_durable_channel/stream"
 import { answer, join, openSocket, waitFor } from "./support/helpers"
@@ -48,7 +51,8 @@ async function publish(channel: Channel, body: string): Promise<void> {
 }
 
 async function joinedReader(channel: Channel): Promise<PublishedReader> {
-  return ((await join(channel)) as { phx_reader: PublishedReader }).phx_reader
+  expect(await join(channel)).toEqual({ phx_durable: true })
+  return (await answer(channel.push("phx_reader"))).response as PublishedReader
 }
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -239,18 +243,20 @@ test("the server names a Durable Streams store, and a node whose next number ano
   expect(seen).toEqual(["one", "two", "another node", "four"])
 })
 
-function collect(stream: DurableStream, after: number) {
+function collect(stream: DurableStream, after: number, resume: Resume | null = null) {
   const delivered: Array<StreamMessage> = []
   const failures: Array<unknown> = []
+  const reached: Array<Resume> = []
   const stop = stream.read(
-    { after, epoch: "" },
+    { after, epoch: "", resume },
     {
       deliver: (message) => delivered.push(message),
       moved: () => {},
+      reached: (position) => reached.push(position),
       failed: (error) => failures.push(error),
     },
   )
-  return { delivered, failures, stop }
+  return { delivered, failures, reached, stop }
 }
 
 test("a Durable Streams read after the last one, or after where the join said the stream ended, starts there; any other at the beginning", async () => {
@@ -270,23 +276,22 @@ test("a Durable Streams read after the last one, or after where the join said th
     read.delivered.map((message) => message.number)
 
   const first = collect(stream, 0)
-  await waitFor(() => first.delivered.length === 2)
+  await waitFor(() => first.reached.at(-1)?.number === 2)
   first.stop()
   expect(first.delivered).toEqual([
     { number: 1, event: "update", payload: { body: "one" } },
     { number: 2, event: "update", payload: { body: "two" } },
   ])
 
-  const resumed = collect(stream, 2)
+  const reachedTwo = first.reached.at(-1)
+  expect(reachedTwo).toEqual({ number: 2, offset: expect.any(String) })
+  const resumed = collect(stream, 2, reachedTwo)
   await publish(channel, "three")
   await waitFor(() => resumed.delivered.length === 1)
   resumed.stop()
   expect(numbers(resumed)).toEqual([3])
 
-  const fromTheStart = collect(
-    new DurableStream({ url: String(reader["url"]), token: () => token }),
-    1,
-  )
+  const fromTheStart = collect(stream, 1, reachedTwo)
   await waitFor(() => fromTheStart.delivered.length === 3)
   fromTheStart.stop()
   expect(numbers(fromTheStart)).toEqual([1, 2, 3])
@@ -305,6 +310,51 @@ test("a Durable Streams read after the last one, or after where the join said th
   await waitFor(() => fromTheJoin.delivered.length === 1)
   fromTheJoin.stop()
   expect(numbers(fromTheJoin)).toEqual([4])
+})
+
+test("a channel whose Durable Streams read fails reads again from where the store said it had reached", async () => {
+  const topic = durableTopic("reached")
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const reads: Array<Position> = []
+  const channel = socket.channel(
+    topic,
+    { stream: "durable-streams" },
+    {
+      durable: true,
+      after: 0,
+      readers: {
+        "durable-streams": (latest, refresh) => ({
+          read: (from, callbacks) => {
+            reads.push(from)
+            return builtInReaders["durable-streams"]!(latest, refresh).read(from, {
+              ...callbacks,
+              reached: (resume) => {
+                callbacks.reached(resume)
+                if (reads.length === 1 && resume.number === 2) callbacks.failed("cut")
+              },
+            })
+          },
+        }),
+      },
+    },
+  )
+  const seen = updates(channel)
+  await join(channel)
+  await publish(channel, "one")
+  await publish(channel, "two")
+  await waitFor(() => reads.length === 2)
+  expect(reads[1]).toEqual({
+    after: 2,
+    epoch: "",
+    resume: { number: 2, offset: expect.any(String) },
+  })
+  expect(reads[1]!.resume!.offset).not.toBe("-1")
+
+  await publish(channel, "three")
+  await waitFor(() => seen.length === 3)
+  await pause(200)
+  expect(seen).toEqual(["one", "two", "three"])
 })
 
 test("a Durable Streams read without a token is refused, and fails", async () => {

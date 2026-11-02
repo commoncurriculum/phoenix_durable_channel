@@ -406,10 +406,15 @@ describe.each(["memory", "mongo"])("reading from %s", (store) => {
 })
 
 describe("with the memory store, whose kept messages and replies the test app can drop", () => {
-  test("a gap is fetched, and what the server no longer has is skipped", async () => {
-    const socket = openSocket("/socket", fast)
+  test("a gap is fetched, and what the server no longer has is skipped and logged", async () => {
+    const logs: Array<string> = []
+    const socket = openSocket("/socket", {
+      ...fast,
+      logger: (_kind, message) => logs.push(message),
+    })
     socket.connect()
-    const channel = socket.channel(durableTopic("gap"), {}, { durable: true })
+    const name = durableTopic("gap")
+    const channel = socket.channel(name, {}, { durable: true })
     const seen = updates(channel)
     await join(channel)
 
@@ -425,6 +430,7 @@ describe("with the memory store, whose kept messages and replies the test app ca
     channel.push("publish", { body: "6" })
     await waitFor(() => seen.length === 5)
     expect(seen).toEqual(["1", "2", "3", "5", "6"])
+    expect(logs).toContain(`${name} skipped durable messages 4 to 4, which the store no longer has`)
     await answer(channel.push("publish", { body: "7" }))
     await waitFor(() => seen.length === 6)
     expect(seen).toEqual(["1", "2", "3", "5", "6", "7"])
@@ -534,4 +540,54 @@ describe("with the memory store, whose kept messages and replies the test app ca
     expect(oldJoins).toBeGreaterThanOrEqual(2)
     await expect.poll(() => count(`old_left:${upgrading}`)).toBe(oldJoins)
   })
+})
+
+test("a node forgets what it kept of a Durable Streams ledger once the topic's channel leaves, whatever the stream", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const room = socket.channel(durableTopic("asks"))
+  await join(room)
+  const name = durableTopic("rows")
+  const rows = async () =>
+    ((await answer(room.push("ledger_rows", { topic: name }))).response as { rows: number }).rows
+  const first = socket.channel(name, { ledger: "durable-streams" }, { durable: true })
+  await join(first)
+  await answer(first.push("action", { body: "1" }, { durable: true }))
+  expect(await rows()).toBeGreaterThan(0)
+
+  await answer(first.leave())
+  await expect.poll(rows).toBe(0)
+})
+
+test("a durable request on a channel joined without durable messages, or a read the store does not serve, is invalid", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const invalid = { status: "error", response: { reason: "invalid" } }
+  const name = durableTopic("plain")
+  const plain = socket.channel(name)
+  await join(plain)
+  expect(await answer(plain.push("phx_sync"))).toEqual(invalid)
+  expect(await answer(plain.push("phx_read", { after: 0 }))).toEqual(invalid)
+  expect(await answer(plain.push("phx_reader"))).toEqual(invalid)
+  const replies: Array<unknown> = []
+  socket.onMessage((message) => {
+    if (message.topic === name && message.ref === "durable-frame") replies.push(message.payload)
+  })
+  socket.push({
+    topic: name,
+    event: "action",
+    payload: { body: "1" },
+    ref: "durable-frame",
+    join_ref: plain.joinRef(),
+    number: 1,
+  })
+  await waitFor(() => replies.length === 1)
+  expect(replies).toEqual([invalid])
+
+  const durable = socket.channel(durableTopic("durable"), {}, { durable: true })
+  await join(durable)
+  expect(await answer(durable.push("phx_read", { after: -1 }))).toEqual(invalid)
+  const elsewhere = socket.channel(durableTopic("s2"), { stream: "s2" }, { durable: true })
+  await join(elsewhere)
+  expect(await answer(elsewhere.push("phx_read", { after: 0 }))).toEqual(invalid)
 })

@@ -20,9 +20,15 @@ export const backoff = (delay: (tries: number) => number) =>
     Effect.runPromise(Effect.sleep(delay(input.tries)), { signal }),
   )
 
-export type Data<T> = {
-  [K in keyof T]: T[K] extends (...args: never[]) => unknown ? never : T[K]
-}
+export type Data<T> = T extends (...args: never[]) => unknown
+  ? never
+  : T extends ReadonlyMap<infer K, infer V>
+    ? ReadonlyMap<Data<K>, Data<V>>
+    : T extends ReadonlyArray<infer E>
+      ? ReadonlyArray<Data<E>>
+      : T extends object
+        ? { readonly [K in keyof T]: Data<T[K]> }
+        : T
 
 export function startMachine<Logic extends AnyActorLogic>(
   logic: Logic,

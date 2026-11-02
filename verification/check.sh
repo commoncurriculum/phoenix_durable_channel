@@ -58,6 +58,8 @@ noPushTimer EveryPushAnswered PROPERTY
 rebufferOnLoss HandledOnce INVARIANT
 flushReversed HandledInOrderOnAJoin INVARIANT
 replacedCloses ClosedOnlyWhenLeft INVARIANT
+openAfterCallback KnowsWhetherTheSocketIsOpen INVARIANT
+leaveOnlyWhenOpen ServerForgetsClosedChannel INVARIANT
 EOF
 
 check DurableMessages "  MaxPush = 4
@@ -73,6 +75,8 @@ historicIsOk AnsweredAsHandled INVARIANT
 retryIsAnswer OnlyTakenAreAnswered INVARIANT
 unmatchedIsAnswer OnlyTakenAreAnswered INVARIANT
 staleCount HandledOnceUnlessCrashed INVARIANT
+syncBeforeReplace HandledOnceUnlessCrashed INVARIANT
+resetRereads HandledOnceUnlessCrashed INVARIANT
 EOF
 
 check ChannelRead "  NodeCount = 2

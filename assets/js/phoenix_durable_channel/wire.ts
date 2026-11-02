@@ -97,11 +97,7 @@ const PublishedReader = Schema.Struct(
   Schema.Record({ key: Schema.String, value: Schema.Unknown }),
 )
 
-const DurableJoinReply = Schema.Struct({ phx_reader: PublishedReader })
-
-export const hasPublishedReader = Schema.is(DurableJoinReply)
-
-export const decodeDurableJoinReply = Schema.decodeUnknownSync(DurableJoinReply)
+export const isDurableJoinReply = Schema.is(Schema.Struct({ phx_durable: Schema.Literal(true) }))
 
 export const decodePublishedReader = Schema.decodeUnknownSync(PublishedReader)
 export const decodeS2Reader = Schema.decodeUnknownSync(
