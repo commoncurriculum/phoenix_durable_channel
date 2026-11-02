@@ -63,7 +63,7 @@ defmodule PhoenixDurableChannel.Stream.Memory do
   end
 
   @impl GenServer
-  def handle_info({:DOWN, _ref, :process, channel, _reason}, state) do
+  def handle_info({:DOWN, _reference, :process, channel, _reason}, state) do
     topic = Map.fetch!(state.channels, channel)
     put(topic, kept(topic))
     channels = Map.delete(state.channels, channel)
@@ -105,7 +105,10 @@ defmodule PhoenixDurableChannel.Stream.Memory do
   end
 
   @impl PhoenixDurableChannel.Ledger
-  def received(socket), do: kept(socket.topic).received
+  def received(socket) do
+    :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})
+    kept(socket.topic).received
+  end
 
   @impl PhoenixDurableChannel.Ledger
   def put_received(socket, number, reply),

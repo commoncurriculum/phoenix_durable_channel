@@ -8,9 +8,15 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
   @impl GenServer
-  def init(_options) do
+  def init(options) do
     :ets.new(@table, [:named_table, :public, write_concurrency: true])
-    {:ok, %{channels: %{}, counts: %{}}}
+
+    {:ok,
+     %{
+       channels: %{},
+       counts: %{},
+       forget_after: Keyword.get(options, :forget_after, :timer.minutes(5))
+     }}
   end
 
   @impl GenServer
@@ -30,18 +36,26 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   end
 
   @impl GenServer
-  def handle_info({:DOWN, _ref, :process, channel, _reason}, state) do
+  def handle_info({:DOWN, _reference, :process, channel, _reason}, state) do
     topic = Map.fetch!(state.channels, channel)
-    channels = Map.delete(state.channels, channel)
+    count = Map.fetch!(state.counts, topic) - 1
+    if count == 0, do: Process.send_after(self(), {:forget, topic}, state.forget_after)
 
-    case Map.fetch!(state.counts, topic) do
-      1 ->
-        :ets.delete(@table, topic)
-        :ets.delete(@table, replies(topic))
-        {:noreply, %{state | channels: channels, counts: Map.delete(state.counts, topic)}}
+    {:noreply,
+     %{
+       state
+       | channels: Map.delete(state.channels, channel),
+         counts: Map.put(state.counts, topic, count)
+     }}
+  end
 
-      count ->
-        {:noreply, %{state | channels: channels, counts: Map.put(state.counts, topic, count - 1)}}
+  def handle_info({:forget, topic}, state) do
+    if Map.get(state.counts, topic) == 0 do
+      :ets.delete(@table, topic)
+      :ets.delete(@table, replies(topic))
+      {:noreply, %{state | counts: Map.delete(state.counts, topic)}}
+    else
+      {:noreply, state}
     end
   end
 

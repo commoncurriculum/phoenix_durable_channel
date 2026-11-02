@@ -5,8 +5,8 @@ defmodule TestServer.Application do
     children = [
       {Phoenix.PubSub, name: TestServer.PubSub},
       TestServer.Joins,
-      {PhoenixDurableChannel.Stream.Memory, kept: 2000},
-      PhoenixDurableChannel.Stream.DurableStreams,
+      {PhoenixDurableChannel.Stream.Memory, kept: 2000, forget_after: 2000},
+      {PhoenixDurableChannel.Stream.DurableStreams, forget_after: 2000},
       {S2,
        name: TestServer.S2,
        basin: "phoenix-durable-channel",
@@ -72,8 +72,8 @@ defmodule TestServer.Endpoint do
 
   plug(:health)
 
-  def health(%{request_path: "/hang/websocket"}, _opts), do: Process.sleep(:infinity)
-  def health(conn, _opts), do: conn |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
+  def health(%{request_path: "/hang/websocket"}, _options), do: Process.sleep(:infinity)
+  def health(conn, _options), do: conn |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
 end
 
 defmodule TestServer.UserSocket do

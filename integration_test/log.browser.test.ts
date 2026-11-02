@@ -542,7 +542,7 @@ describe("with the memory store, whose kept messages and replies the test app ca
   })
 })
 
-test("a node forgets what it kept of a Durable Streams ledger once the topic's channel leaves, whatever the stream", async () => {
+test("a node keeps what it read of a Durable Streams ledger while the topic's channel is away, and forgets it once the topic has had no channel for forget_after, whatever the stream", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()
   const room = socket.channel(durableTopic("asks"))
@@ -553,10 +553,23 @@ test("a node forgets what it kept of a Durable Streams ledger once the topic's c
   const first = socket.channel(name, { ledger: "durable-streams" }, { durable: true })
   await join(first)
   await answer(first.push("action", { body: "1" }, { durable: true }))
-  expect(await rows()).toBeGreaterThan(0)
+  expect(await rows()).toBe(1)
 
   await answer(first.leave())
-  await expect.poll(rows).toBe(0)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  expect(await rows()).toBe(1)
+  await expect.poll(rows, { timeout: 5000 }).toBe(0)
+})
+
+test("a Memory ledger keeps what a joined channel received however long the channel stays idle, whatever the stream", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("idle"), { stream: "s2" }, { durable: true })
+  await join(channel)
+  await answer(channel.push("action", { body: "1" }, { durable: true }))
+
+  await new Promise((resolve) => setTimeout(resolve, 3000))
+  expect(await ledger(channel)).toMatchObject({ received: 1 })
 })
 
 test("a durable request on a channel joined without durable messages, or a read the store does not serve, is invalid", async () => {
