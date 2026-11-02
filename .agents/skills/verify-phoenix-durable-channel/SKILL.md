@@ -1,33 +1,26 @@
 ---
 name: verify-phoenix-durable-channel
-description: Check a change to phoenix_durable_channel against the owner's requirements. Use before every commit that touches assets/js, lib, test, integration_test, phoenix_js_test, verification or jepsen, and before calling any work done.
+description: Check a change to phoenix_durable_channel against the owner's requirements, which are quoted here and nothing else. Use before every commit and before calling any work done.
 ---
 
 # Verify phoenix_durable_channel
 
-Each requirement below is the owner's. Check every one, every time. A requirement that fails is a failure of the change, not a note for later. What the code does belongs in the tests; this list is only what the code must be built from and must pass.
+Every requirement below is quoted from the owner. Nothing else is a requirement: anything a reviewer or an agent proposes beyond this list is a suggestion for the owner to accept or reject, never a rule to check against. Add a requirement here only in the owner's own words, after the owner says it.
 
-## How it is built
+1. **supergrain.** "you use the supergrain library, read the docs, understand how it works." "an activity module in Supergrain, which is a state chart around activity ... you should also build on that as well."
+2. **No setState.** "you may not use set state, that is not allowed."
+3. **Effect.** "you must use effect TS. That is the way to handle concurrency."
+4. **XState.** "you must use X state as the state chart library."
+5. **TypeScript.** "It must be written in TypeScript."
+6. **Formally verified.** "it must be formally verified", with "the pstack formal verification skill, and their state chart skill." Check: `verification/check.sh`.
+7. **Same API.** "the API should not change unless it absolutely has to ... the goal should be same API, only it works ... easy to swap out what we have for this new thing."
+8. **100% coverage.** "it needs to be fully tested with 100% test coverage." Check: `pnpm test`.
+9. **Jepsen.** The owner chose "Real Jepsen (Clojure)". Check: `jepsen/run.sh` on every store and both transports.
+10. **General-purpose.** "It simply knows about messages from Phoenix channels. I should be able to publicize this as a general purpose library, not something that's tied to our app." "Could you verify there isn't anything about v4 or our app in it? No codes, no concepts".
+11. **Stores.** "Our data store options for any sort of ledger are Mongo ... S2, or durable objects, which is Cloudflare. I should not see Postgres. I should definitely see durable objects in on Wrangler ... all of those stores should be pluggable and have the same interface."
+12. **Phoenix's own tests.** "does this pass all the existing phoenix tests? If not, it needs to and those need to be part of the test suite in a separate folder so we can copy/paste them over". "do you have the server phoenix tests running for durable_channel? Those are the ones I'm most concerned about." Check: `mix test`, and `npx jest -c phoenix_js_test/jest.config.cjs -i`.
+13. **No comments.** "remove ALL the comments in your code. ALL of them." Check: `pnpm lint`.
 
-1. **TypeScript.** Every client source under `assets/js/phoenix_durable_channel/` is `.ts`. `pnpm lint` passes.
-2. **XState holds every state.** Each thing with a lifecycle (socket, channel, push, log, reader, long poll) is a machine in `machines/`. No mutable flags or `let` that outlive one function decide behavior; a variable that does is a state the machine is missing. A machine reaches the outside only by `emit` or by an actor its class gives it with `.provide` (a transport, a store read, a backoff, activity); its actions do no side effects, and `assign` only computes context. Context is data only (`Data<T>` in `actors.ts`): no functions, no settings objects of callbacks. Public states (`connectionState`, `channel.status.state`, a push's state) are the machine's tags, one on every leaf (`integration_test/machines.browser.test.ts`). Each fact is decided in one place: a connection's open and loss come only from the socket machine's numbered `opened` and `connectionLost` emits, in that order, and a channel errors on a loss only for the connection its join went out on. A reader through the channel reads only while its channel is joined, which the server's count of reads pins across refused rejoins (`integration_test/log.browser.test.ts`) and `ChannelRead.tla`'s `ReadOnlyWhileJoined` models.
-3. **Effect does the concurrency.** Timers, fetches, streams, retries and cancellation are Effect fibers, started and interrupted by the machine state that owns them. No bare `setTimeout`, `setInterval`, `new Promise` or `.then` chains.
-   `grep -rnE 'setTimeout|setInterval|new Promise|\.then\(' assets/js` finds nothing.
-4. **supergrain is the state the app reads.** `socket.status`, `channel.status` and `channel.log.status` are supergrain reactives, written only from machine snapshots. Activity (here, away) comes from `@supergrain/activity`'s statechart.
-5. **No setState.** Nothing sets state from outside a machine: no `setState`, no assigning to a reactive outside the snapshot observer.
-6. **No comments.** None in any file this repo owns, tracked or not. `pnpm lint` (`scripts/no-comments.ts`) fails on one in TypeScript or JavaScript, and `mix test` (`test/no_comments_test.exs`) on a comment, or a `@doc`, `@moduledoc` or `@typedoc` other than `false`, in any `.ex` or `.exs` outside `deps`, `_build` and the vendored tests. Phoenix's vendored tests (`test/phoenix/`, `test/support/*_client.exs`, `phoenix_js_test/test/`) stay byte-for-byte as Phoenix ships them.
-7. **General-purpose.** The library knows Phoenix sockets, channels and durable messages. No app's names or concepts anywhere: code, tests, README, Jepsen.
-8. **Stores: Mongo, S2 and Durable Streams on Cloudflare Durable Objects (via Wrangler). Never Postgres.** Each is a ledger and a stream behind `PhoenixDurableChannel.Ledger` and `PhoenixDurableChannel.Stream`. A hard store is never swapped for an easier one.
+The repo's `CLAUDE.md` also holds the owner's rule of no mocks, stubs or fakes in tests.
 
-## What it must pass
-
-9. **Phoenix's own tests, from the latest Phoenix release.** `mix test` runs Phoenix's server channel tests (`test/phoenix/`) with their channels on `PhoenixDurableChannel.Channel` and their sockets on `PhoenixDurableChannel.Serializer`, over WebSocket and LongPoll. `npx jest -c phoenix_js_test/jest.config.cjs -i` runs Phoenix's JS tests against this client; the only failures allowed are those in `phoenix_js_test/internals.json`, each naming the phoenix.js private member it reaches into. A listed test that touches no private member is a gap in this client: fix the client, not the list. When Phoenix releases, copy its files over again unchanged.
-10. **The phoenix.js API.** An app swaps `import { Socket } from "phoenix"` for this package and changes nothing else. A change to that API needs the owner's yes first.
-11. **Old clients keep working.** A server running this library still serves phoenix.js 1.7 clients (V1 and V2 serializers) without a reload.
-12. **100% coverage from real tests.** `pnpm test` runs in real Chromium against the real Phoenix app and real stores, and fails under 100% lines, branches, functions and statements. No mocks, stubs or fakes; Phoenix's own vendored tests are the only exception.
-13. **TLA+.** `verification/check.sh` passes: every model holds on the code as it is, and every `Broken` variant breaks the rule it names. A change to a machine or to `lib/` changes the model of it in the same commit. Encoding a frame is outside `PhoenixDurableChannel.tla`: that a frame encoded for one connection never goes out on another is pinned by the socket's RecordedWebSocket test (`integration_test/socket.browser.test.ts`).
-14. **Jepsen.** `jepsen/run.sh` with real Jepsen, every store and both transports, finds the history valid: each durable message handled once and in order, none lost.
-
-## Before saying done
-
-Run 1, 3, 9, 12 and 13, and 14 when the change touches delivery, the stores or `lib/`. Report each by number with its result.
+Before saying done, run the checks above and report each by number with its result.
