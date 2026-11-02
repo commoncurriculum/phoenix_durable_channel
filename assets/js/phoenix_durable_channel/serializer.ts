@@ -10,6 +10,7 @@ export interface Message {
   event: string
   payload: Payload
   number?: number
+  epoch?: string | undefined
 }
 
 export type EncodedMessage = string | ArrayBuffer
@@ -29,9 +30,9 @@ export const Serializer = {
 
   decode<T>(raw: EncodedMessage, callback: (message: Message) => T): T {
     if (raw instanceof ArrayBuffer) return callback(binaryDecode(raw))
-    const [join_ref, ref, topic, event, payload, number] = decodeFrame(raw)
+    const [join_ref, ref, topic, event, payload, number, epoch] = decodeFrame(raw)
     const message = { join_ref, ref, topic, event, payload }
-    return callback(number === undefined ? message : { ...message, number })
+    return callback(number === undefined ? message : { ...message, number, epoch })
   },
 }
 

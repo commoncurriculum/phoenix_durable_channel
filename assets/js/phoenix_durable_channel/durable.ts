@@ -160,11 +160,11 @@ export class Durable implements ChannelExtension {
   }
 
   receive(message: Message): void {
-    const { event, payload, ref, join_ref, number } = message
+    const { event, payload, ref, join_ref, number, epoch } = message
     if (event === CHANNEL_EVENTS.reader)
       return this.reader.send({ type: "PUBLISHED", reader: decodePublishedReader(payload) })
     if (number === undefined) return this.trigger(event, payload, ref, join_ref)
-    this.reader.send({ type: "MESSAGE", message: { number, event, payload } })
+    this.reader.send({ type: "MESSAGE", message: { number, event, payload }, epoch })
   }
 
   reply(ref: string | null, status: string, response: unknown): void {

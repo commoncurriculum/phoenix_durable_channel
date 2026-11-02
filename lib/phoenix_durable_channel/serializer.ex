@@ -8,8 +8,8 @@ defmodule PhoenixDurableChannel.Serializer do
   defdelegate fastlane!(broadcast), to: JSONSerializer
 
   @impl true
-  def encode!(%Message{payload: {:durable, number, payload}} = message) do
-    frame = [message.join_ref, message.ref, message.topic, message.event, payload, number]
+  def encode!(%Message{payload: {:durable, number, epoch, payload}} = message) do
+    frame = [message.join_ref, message.ref, message.topic, message.event, payload, number, epoch]
     {:socket_push, :text, Phoenix.json_library().encode_to_iodata!(frame)}
   end
 

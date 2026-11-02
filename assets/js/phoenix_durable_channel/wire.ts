@@ -11,6 +11,7 @@ export const decodeFrame = Schema.decodeUnknownSync(
       Schema.String,
       Schema.Unknown,
       Schema.optionalElement(Schema.Number),
+      Schema.optionalElement(Schema.String),
     ),
   ),
 )

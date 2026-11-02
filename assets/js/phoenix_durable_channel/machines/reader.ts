@@ -4,7 +4,7 @@ import type { Position, PublishedReader, Resume, StreamMessage } from "../stream
 
 export type ReaderEvent =
   | { type: "PUBLISHED"; reader: PublishedReader }
-  | { type: "MESSAGE"; message: StreamMessage }
+  | { type: "MESSAGE"; message: StreamMessage; epoch?: string | undefined }
   | { type: "PASSED"; number: number }
   | { type: "REACHED"; resume: Resume }
   | { type: "FAILED" }
@@ -47,6 +47,8 @@ const reader = setup({
       event.type === "MESSAGE" && event.message.number > context.from.after,
     isNextInLine: ({ context, event }) =>
       event.type === "MESSAGE" && event.message.number === context.from.after + 1,
+    isSameEpoch: ({ context, event }) =>
+      event.type === "MESSAGE" && event.epoch === context.from.epoch,
     isAhead: ({ context, event }) => event.type === "READ_REPLY" && event.sent < context.from.after,
     isThisRead: ({ context, event }) =>
       (event.type === "READ_REPLY" || event.type === "READ_REFUSED") &&
@@ -166,6 +168,7 @@ export const readerMachine = reader.createMachine({
           }),
           on: {
             MESSAGE: {
+              guard: "isSameEpoch",
               actions: assign({
                 held: ({ context, event }) =>
                   new Map(context.held).set(event.message.number, event.message),
@@ -195,7 +198,7 @@ export const readerMachine = reader.createMachine({
           on: {
             MESSAGE: [
               {
-                guard: "isNextInLine",
+                guard: and(["isSameEpoch", "isNextInLine"]),
                 target: ".inLine",
                 actions: {
                   type: "advance",
@@ -212,7 +215,7 @@ export const readerMachine = reader.createMachine({
           states: {
             inLine: {},
             ahead: {
-              on: { MESSAGE: { guard: not("isNext") } },
+              on: { MESSAGE: { guard: and(["isSameEpoch", not("isNext")]) } },
             },
           },
         },

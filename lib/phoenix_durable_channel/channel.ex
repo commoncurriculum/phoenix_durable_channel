@@ -168,7 +168,7 @@ defmodule PhoenixDurableChannel.Channel do
     number = stream.append(socket, event, payload)
 
     if through_channel?(stream),
-      do: Phoenix.Channel.push(socket, event, {:durable, number, payload})
+      do: Phoenix.Channel.push(socket, event, {:durable, number, stream.epoch(socket), payload})
 
     :ok
   end
@@ -188,7 +188,7 @@ defmodule PhoenixDurableChannel.Channel do
     page = stream.since(socket, last, @page)
 
     Enum.each(page.messages, fn {number, event, payload} ->
-      Phoenix.Channel.push(socket, event, {:durable, number, payload})
+      Phoenix.Channel.push(socket, event, {:durable, number, page.epoch, payload})
     end)
 
     if page.sent < page.latest,

@@ -695,6 +695,48 @@ test("a store that numbers afresh while the channel stays joined is read again f
   expect(skipped).toEqual([])
 })
 
+test("a store that numbers afresh before a topic's first message is read once, and again only from where the client got to", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const room = socket.channel(durableTopic("asks"))
+  await join(room)
+  const name = durableTopic("afresh at the start")
+  const reads = async () =>
+    ((await answer(room.push("counts", { topic: name }))).response as { reads: number }).reads
+  const channel = socket.channel(name, { stream: "slow" }, { durable: true })
+  const seen = updates(channel)
+  await join(channel)
+  await expect.poll(reads).toBe(1)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  await answer(channel.push("reset"))
+  for (const body of ["1", "2"]) await answer(channel.push("publish", { body }))
+  await waitFor(() => seen.length === 2)
+
+  channel.push("kill_transport")
+  await waitFor(() => channel.state !== "joined")
+  await waitFor(() => channel.state === "joined")
+  await answer(channel.push("publish", { body: "3" }))
+  await waitFor(() => seen.length === 3)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  expect(seen).toEqual(["1", "2", "3"])
+})
+
+test("a push in another epoch whose number is next in line ends the read, and what that epoch kept before it is delivered", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("epoch gap"), {}, { durable: true })
+  const seen = updates(channel)
+  await join(channel)
+  await answer(channel.push("publish", { body: "1" }))
+  await waitFor(() => seen.length === 1)
+
+  await answer(channel.push("reset"))
+  await answer(channel.push("publish_silently", { body: "other 1" }))
+  await answer(channel.push("publish", { body: "other 2" }))
+  await waitFor(() => seen.length === 3)
+  expect(seen).toEqual(["1", "other 1", "other 2"])
+})
+
 test("a live message at or before an `after` beyond the stream's last number is ignored, costs no read, and the next one is delivered", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()
