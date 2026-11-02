@@ -40,6 +40,9 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
 
       {:error, %Mongo.Error{code: 11_000}} ->
         append(socket, event, payload)
+
+      {:error, error} ->
+        raise "Mongo refused an append to #{socket.topic}: #{Exception.message(error)}"
     end
   end
 
@@ -72,9 +75,17 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
     document = %{topic: socket.topic, number: number, status: status, response: response}
 
     case Mongo.insert_one(config()[:name], config()[:replies], document) do
-      {:ok, _result} -> :ok
-      {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} -> :ok
-      {:error, %Mongo.Error{code: 11_000}} -> :ok
+      {:ok, _result} ->
+        :ok
+
+      {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} ->
+        :ok
+
+      {:error, %Mongo.Error{code: 11_000}} ->
+        :ok
+
+      {:error, error} ->
+        raise "Mongo refused reply #{number} to #{socket.topic}: #{Exception.message(error)}"
     end
   end
 

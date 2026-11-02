@@ -27,31 +27,12 @@ defmodule PhoenixDurableChannel.Channel do
   end
 
   defmacro __before_compile__(env) do
-    handle_info =
-      if Module.defines?(env.module, {:handle_info, 2}) do
-        quote do
-          defoverridable handle_info: 2
+    defines_handle_info = Module.defines?(env.module, {:handle_info, 2})
 
-          def handle_info(:phx_replaced, socket),
-            do: PhoenixDurableChannel.Channel.replaced(socket)
-
-          def handle_info({:phx_durable_joined, ledger_for, stream_for}, socket),
-            do: PhoenixDurableChannel.Channel.joined(ledger_for, stream_for, socket)
-
-          def handle_info(message, socket), do: super(message, socket)
-        end
-      else
-        quote do
-          def handle_info(:phx_replaced, socket),
-            do: PhoenixDurableChannel.Channel.replaced(socket)
-
-          def handle_info({:phx_durable_joined, ledger_for, stream_for}, socket),
-            do: PhoenixDurableChannel.Channel.joined(ledger_for, stream_for, socket)
-
-          def handle_info(message, socket),
-            do: PhoenixDurableChannel.Channel.unexpected_message(message, socket)
-        end
-      end
+    other_message =
+      if defines_handle_info,
+        do: quote(do: super(message, socket)),
+        else: quote(do: PhoenixDurableChannel.Channel.unexpected_message(message, socket))
 
     defines_handle_in = Module.defines?(env.module, {:handle_in, 3})
 
@@ -106,7 +87,15 @@ defmodule PhoenixDurableChannel.Channel do
 
       unquote(handle_in)
 
-      unquote(handle_info)
+      if unquote(defines_handle_info), do: defoverridable(handle_info: 2)
+
+      def handle_info(:phx_replaced, socket),
+        do: PhoenixDurableChannel.Channel.replaced(socket)
+
+      def handle_info({:phx_durable_joined, ledger_for, stream_for}, socket),
+        do: PhoenixDurableChannel.Channel.joined(ledger_for, stream_for, socket)
+
+      def handle_info(message, socket), do: unquote(other_message)
     end
   end
 
