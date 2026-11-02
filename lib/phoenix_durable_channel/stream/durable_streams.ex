@@ -4,6 +4,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   use GenServer
 
   @table __MODULE__
+  @replies_kept 64
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
@@ -65,12 +66,14 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     kept = kept(topic) || read(topic)
     number = kept.given + 1
 
-    if post(topic, number, event, payload) == :ok do
-      :ets.insert(@table, {topic, %{kept | given: number}})
-      number
-    else
-      read(topic)
-      append(socket, event, payload)
+    case post(topic, number, event, payload) do
+      :taken ->
+        read(topic)
+        append(socket, event, payload)
+
+      _offset ->
+        :ets.insert(@table, {topic, %{kept | given: number}})
+        number
     end
   end
 
@@ -85,7 +88,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
       )
 
     cond do
-      response.status in 200..299 -> :ok
+      response.status in 200..299 -> hd(Req.Response.get_header(response, "stream-next-offset"))
       response.status == 409 -> :taken
       true -> raise "Durable Streams refused an append to #{topic}: HTTP #{response.status}"
     end
@@ -109,7 +112,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
             ]
           )
 
-          %{given: 0, offset: "-1", last: 0}
+          %{given: 0, offset: "-1", last: 0, offsets: %{}}
 
         kept ->
           kept
@@ -159,14 +162,23 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   @impl PhoenixDurableChannel.Ledger
   def put_received(socket, number, {status, response}) do
     topic = replies(socket.topic)
-    post(topic, number, "reply", %{status: status, response: response})
+    offset = post(topic, number, "reply", %{status: status, response: response})
     kept = kept(topic) || read(topic)
-    :ets.insert(@table, {topic, %{kept | last: max(kept.last, number)}})
+
+    offsets =
+      if offset == :taken,
+        do: kept.offsets,
+        else: kept.offsets |> Map.put(number, offset) |> Map.delete(number - @replies_kept)
+
+    :ets.insert(@table, {topic, %{kept | last: max(kept.last, number), offsets: offsets}})
     :ok
   end
 
   @impl PhoenixDurableChannel.Ledger
-  def reply(socket, number), do: find(replies(socket.topic), "-1", number)
+  def reply(socket, number) do
+    topic = replies(socket.topic)
+    find(topic, Map.get((kept(topic) || read(topic)).offsets, number - 1, "-1"), number)
+  end
 
   def find(topic, offset, number) do
     response = get(topic, offset)
