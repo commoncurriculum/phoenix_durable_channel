@@ -573,6 +573,19 @@ test("a node reads a Durable Streams stream from its start once while the topic'
   expect(await readsFromStart()).toBe(2)
 })
 
+test("a durable push whose answer the store forgot is answered reply_lost once a later answer is read", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("forgotten"), {}, { durable: true })
+  await join(channel)
+  const forgotten = channel.push("action", { body: "lose_and_forget_reply" }, { durable: true })
+  await waitFor(() => channel.state !== "joined")
+  const later = channel.push("action", { body: "later" }, { durable: true })
+  expect(await answer(forgotten)).toEqual({ status: "error", response: { reason: "reply_lost" } })
+  expect(await answer(later)).toEqual({ status: "ok", response: { body: "later" } })
+  expect(await ledger(channel)).toEqual({ received: 2, sent: 2 })
+})
+
 test("a Memory stream keeps what a joined channel received however long the channel stays idle", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()

@@ -91,6 +91,19 @@ export const logMachine = setup({
         })
       },
     ),
+    loseEarlier: enqueueActions(
+      ({ context, enqueue }, event: Extract<LogEvent, { type: "ANSWERED" }>) => {
+        const earlier = (entry: Entry) => entry.sent !== null && entry.sent.number < event.number
+        for (const entry of context.queue.filter(earlier))
+          enqueue.emit({
+            type: "answer",
+            id: entry.id,
+            status: "error",
+            response: { reason: "reply_lost" },
+          })
+        enqueue.assign({ queue: context.queue.filter((entry) => !earlier(entry)) })
+      },
+    ),
     sync: emit({ type: "sync" }),
     applySync: enqueueActions(({ context, enqueue }, received: number) => {
       const handled = context.queue.findIndex(
@@ -127,7 +140,12 @@ export const logMachine = setup({
         params: ({ event }) => ({ ...event, sent: null }),
       },
     },
-    ANSWERED: { actions: { type: "answer", params: ({ event }) => event } },
+    ANSWERED: {
+      actions: [
+        { type: "loseEarlier", params: ({ event }) => event },
+        { type: "answer", params: ({ event }) => event },
+      ],
+    },
     REPLY: {
       guard: not("isNotTaken"),
       actions: {

@@ -420,6 +420,11 @@ defmodule TestServer.DurableChannel do
 
   def handle_info(:not_durable, socket), do: {:noreply, assign(socket, phx_durable: false)}
 
+  def handle_info(:forget, socket) do
+    :ets.insert(Memory, {socket.topic, %{Memory.kept(socket.topic) | messages: []}})
+    {:noreply, socket}
+  end
+
   def handle_info(:greet, socket) do
     push_durable(socket, "update", %{body: "welcome"})
     {:noreply, socket}
@@ -506,6 +511,12 @@ defmodule TestServer.DurableChannel do
   def handle_in("action", %{"body" => "lose_reply"}, socket) do
     Process.exit(socket.transport_pid, :kill)
     {:noreply, socket}
+  end
+
+  def handle_in("action", %{"body" => "lose_and_forget_reply"}, socket) do
+    send(self(), :forget)
+    Process.exit(socket.transport_pid, :kill)
+    {:reply, :ok, socket}
   end
 
   def handle_in("action", %{"body" => "busy_once"} = action, socket) do
