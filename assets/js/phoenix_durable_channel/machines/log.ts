@@ -21,7 +21,8 @@ type LogEvent =
   | { type: "CHANNEL_JOINED" }
   | { type: "CHANNEL_LEFT" }
   | { type: "CHANNEL_CLOSED" }
-  | { type: "SYNCED"; received: number }
+  | { type: "SYNCED"; received: number; last: number }
+  | { type: "READ"; after: number }
   | { type: "SYNC_FAILED" }
 
 export type LogEmitted =
@@ -34,6 +35,7 @@ type LogContext = Data<{
   next: number
   syncs: number
   tries: number
+  answeredBy: { received: number; last: number }
 }>
 
 function numberWaiting(
@@ -66,6 +68,8 @@ export const logMachine = setup({
       event.type === "REPLY" && event.status === "error" && isNotTaken(event.response),
     isQueued: ({ context, event }) =>
       event.type === "REPLY" && context.queue.some((entry) => entry.sent?.ref === event.ref),
+    isReadPastAnswers: ({ context, event }) =>
+      event.type === "READ" && event.after >= context.answeredBy.last,
   },
   actions: {
     enqueue: assign(({ context }, entry: Entry) => ({
@@ -91,19 +95,17 @@ export const logMachine = setup({
         })
       },
     ),
-    loseEarlier: enqueueActions(
-      ({ context, enqueue }, event: Extract<LogEvent, { type: "ANSWERED" }>) => {
-        const earlier = (entry: Entry) => entry.sent !== null && entry.sent.number < event.number
-        for (const entry of context.queue.filter(earlier))
-          enqueue.emit({
-            type: "answer",
-            id: entry.id,
-            status: "error",
-            response: { reason: "reply_lost" },
-          })
-        enqueue.assign({ queue: context.queue.filter((entry) => !earlier(entry)) })
-      },
-    ),
+    lose: enqueueActions(({ context, enqueue }, below: number) => {
+      const earlier = (entry: Entry) => entry.sent !== null && entry.sent.number < below
+      for (const entry of context.queue.filter(earlier))
+        enqueue.emit({
+          type: "answer",
+          id: entry.id,
+          status: "error",
+          response: { reason: "reply_lost" },
+        })
+      enqueue.assign({ queue: context.queue.filter((entry) => !earlier(entry)) })
+    }),
     sync: emit({ type: "sync" }),
     applySync: enqueueActions(({ context, enqueue }, received: number) => {
       const handled = context.queue.findIndex(
@@ -131,7 +133,13 @@ export const logMachine = setup({
   },
 }).createMachine({
   id: "log",
-  context: { queue: [], next: 0, syncs: 0, tries: 0 },
+  context: {
+    queue: [],
+    next: 0,
+    syncs: 0,
+    tries: 0,
+    answeredBy: { received: 0, last: Infinity },
+  },
   initial: "away",
   on: {
     PUSH: {
@@ -140,10 +148,12 @@ export const logMachine = setup({
         params: ({ event }) => ({ ...event, sent: null }),
       },
     },
-    ANSWERED: {
+    ANSWERED: { actions: { type: "answer", params: ({ event }) => event } },
+    READ: {
+      guard: "isReadPastAnswers",
       actions: [
-        { type: "loseEarlier", params: ({ event }) => event },
-        { type: "answer", params: ({ event }) => event },
+        { type: "lose", params: ({ context }) => context.answeredBy.received + 1 },
+        assign({ answeredBy: { received: 0, last: Infinity } }),
       ],
     },
     REPLY: {
@@ -170,7 +180,10 @@ export const logMachine = setup({
       on: {
         SYNCED: {
           target: "synced",
-          actions: { type: "applySync", params: ({ event }) => event.received },
+          actions: [
+            { type: "applySync", params: ({ event }) => event.received },
+            assign({ answeredBy: ({ event }) => ({ received: event.received, last: event.last }) }),
+          ],
         },
         SYNC_FAILED: "backingOff",
       },

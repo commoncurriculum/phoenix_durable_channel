@@ -69,7 +69,8 @@ countBeforeRecord CountIsRecorded INVARIANT
 noResend CatchesUp PROPERTY
 renumberHandled HandledOnceUnlessCrashed INVARIANT
 keepAnswered AnsweredOnce INVARIANT
-loseAnyOther LostOnlyAfterReset INVARIANT
+loseAtSync LostOnlyWhenForgotten INVARIANT
+noLoseUnread CatchesUp PROPERTY
 retryIsAnswer OnlyTakenAreAnswered INVARIANT
 unmatchedIsAnswer OnlyTakenAreAnswered INVARIANT
 staleCount HandledOnceUnlessCrashed INVARIANT

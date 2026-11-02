@@ -26,14 +26,16 @@ VARIABLES
     faults,
     replacing,
     oldKnown,
-    reset
+    reset,
+    answeredBy,
+    forgot
 
 vars == <<up, phase, queue, next, syncId, answers, pushes, received, known, log, read, handled,
           toServer, toClient, running, oldBox, oldRunning, gone, crashes, faults,
-          replacing, oldKnown, reset>>
+          replacing, oldKnown, reset, answeredBy, forgot>>
 
-clientVars == <<phase, queue, next, syncId, answers, pushes, read>>
-ledgerVars == <<received, known, log, handled>>
+clientVars == <<phase, queue, next, syncId, answers, pushes, read, answeredBy>>
+ledgerVars == <<received, known, log, handled, forgot>>
 oldVars == <<oldBox, oldRunning, gone, oldKnown>>
 
 Init ==
@@ -60,6 +62,8 @@ Init ==
     /\ replacing = FALSE
     /\ oldKnown = 0
     /\ reset = "no"
+    /\ answeredBy = <<>>
+    /\ forgot = FALSE
 
 Max(a, b) == IF a > b THEN a ELSE b
 Range(s) == {s[i] : i \in DOMAIN s}
@@ -85,7 +89,7 @@ Joins ==
     /\ toServer' = <<[k |-> "sync", sid |-> syncId + 1]>>
     /\ gone' = FALSE
     /\ reset' = IF reset = "live" THEN "joined" ELSE reset
-    /\ UNCHANGED <<queue, next, answers, pushes, read, ledgerVars, toClient, running, oldBox,
+    /\ UNCHANGED <<queue, next, answers, pushes, read, answeredBy, ledgerVars, toClient, running, oldBox,
                    oldRunning, oldKnown, crashes, faults>>
 
 ServerReplaces ==
@@ -93,7 +97,7 @@ ServerReplaces ==
     /\ OldGone \/ Broken = "noReplace"
     /\ replacing' = FALSE
     /\ known' = IF Broken = "staleCount" THEN known ELSE received
-    /\ UNCHANGED <<up, clientVars, received, log, handled, toServer, toClient,
+    /\ UNCHANGED <<up, clientVars, received, log, handled, forgot, toServer, toClient,
                    running, oldVars, crashes, faults, reset>>
 
 ReplaceKills ==
@@ -122,7 +126,7 @@ Drops ==
     /\ toServer' = <<>>
     /\ running' = <<>>
     /\ toClient' = <<>>
-    /\ UNCHANGED <<queue, next, syncId, answers, pushes, read, ledgerVars, crashes, reset>>
+    /\ UNCHANGED <<queue, next, syncId, answers, pushes, read, answeredBy, ledgerVars, crashes, reset>>
 
 ServerCrashes ==
     /\ faults < MaxFaults
@@ -134,7 +138,7 @@ ServerCrashes ==
     /\ toServer' = <<>>
     /\ running' = <<>>
     /\ toClient' = <<>>
-    /\ UNCHANGED <<queue, next, syncId, answers, pushes, read, ledgerVars, oldVars, replacing,
+    /\ UNCHANGED <<queue, next, syncId, answers, pushes, read, answeredBy, ledgerVars, oldVars, replacing,
                    reset>>
 
 LedgerResets ==
@@ -146,9 +150,10 @@ LedgerResets ==
     /\ received' = 0
     /\ log' = <<>>
     /\ read' = 0
+    /\ answeredBy' = <<>>
     /\ known' = IF Broken = "resetRereads" THEN 0 ELSE known
-    /\ UNCHANGED <<up, phase, queue, next, syncId, answers, pushes, handled, toServer, toClient,
-                   running, oldVars, crashes, replacing>>
+    /\ UNCHANGED <<up, phase, queue, next, syncId, answers, pushes, handled, forgot, toServer,
+                   toClient, running, oldVars, crashes, replacing>>
 
 ---------------------------------------------------------------------------
 
@@ -163,7 +168,7 @@ AppPushes ==
                /\ toServer' = toServer \o [i \in DOMAIN Fresh(q, s) |-> PushFrame(Fresh(q, s)[i])]
           ELSE /\ queue' = q
                /\ UNCHANGED <<next, toServer>>
-    /\ UNCHANGED <<up, phase, syncId, answers, read, ledgerVars, toClient, running, oldVars,
+    /\ UNCHANGED <<up, phase, syncId, answers, read, answeredBy, ledgerVars, toClient, running, oldVars,
                    crashes, faults, replacing, reset>>
 
 SyncTimesOut ==
@@ -173,7 +178,7 @@ SyncTimesOut ==
     /\ faults' = faults + 1
     /\ syncId' = syncId + 1
     /\ toServer' = Append(toServer, [k |-> "sync", sid |-> syncId + 1])
-    /\ UNCHANGED <<up, phase, queue, next, answers, pushes, read, ledgerVars, toClient, running,
+    /\ UNCHANGED <<up, phase, queue, next, answers, pushes, read, answeredBy, ledgerVars, toClient, running,
                    oldVars, crashes, replacing, reset>>
 
 SyncReplyArrives ==
@@ -197,7 +202,8 @@ SyncReplyArrives ==
                /\ queue' = s
                /\ phase' = "synced"
                /\ toServer' = toServer \o [i \in DOMAIN resend |-> PushFrame(resend[i])]
-          ELSE UNCHANGED <<next, queue, phase, toServer>>
+               /\ answeredBy' = <<[received |-> m.received, last |-> m.last]>>
+          ELSE UNCHANGED <<next, queue, phase, toServer, answeredBy>>
     /\ UNCHANGED <<up, syncId, answers, pushes, read, ledgerVars, running, oldVars, crashes,
                    faults, replacing, reset>>
 
@@ -217,28 +223,45 @@ AnswerArrives ==
                        /\ toServer' = Append(toServer, [k |-> "sync", sid |-> syncId + 1])
                   ELSE UNCHANGED <<phase, syncId, toServer>>
                /\ UNCHANGED <<answers, queue>>
-    /\ UNCHANGED <<up, next, pushes, read, ledgerVars, running, oldVars, crashes, faults,
+    /\ UNCHANGED <<up, next, pushes, read, answeredBy, ledgerVars, running, oldVars, crashes, faults,
                    replacing, reset>>
 
 AnswerRead ==
     /\ read < Len(log)
     /\ read' = read + 1
     /\ LET a == log[read + 1]
-           lost(e) == e.num # 0 /\ IF Broken = "loseAnyOther" THEN e.num # a.num ELSE e.num < a.num
-           earlier == SelectSeq(queue, lost)
-           rest == SelectSeq(queue, LAMBDA e : ~lost(e))
-           matches == {i \in DOMAIN rest : rest[i].num = a.num}
-           lostAnswers == [i \in DOMAIN earlier |-> [id |-> earlier[i].id, status |-> "lost"]]
+           matches == {i \in DOMAIN queue : queue[i].num = a.num /\ a.status # "forgotten"}
        IN IF matches = {}
-          THEN /\ answers' = answers \o lostAnswers
-               /\ queue' = rest
+          THEN UNCHANGED <<answers, queue>>
           ELSE LET i == CHOOSE x \in matches : TRUE
-               IN /\ answers' = (answers \o lostAnswers) \o <<[id |-> rest[i].id, status |-> a.status]>>
-                  /\ queue' = IF Broken = "keepAnswered" THEN rest
-                               ELSE [j \in 1..(Len(rest) - 1) |->
-                                        IF j < i THEN rest[j] ELSE rest[j + 1]]
-    /\ UNCHANGED <<up, phase, next, syncId, pushes, ledgerVars, toServer, toClient, running,
+               IN /\ answers' = Append(answers, [id |-> queue[i].id, status |-> a.status])
+                  /\ queue' = IF Broken = "keepAnswered" THEN queue
+                               ELSE [j \in 1..(Len(queue) - 1) |->
+                                        IF j < i THEN queue[j] ELSE queue[j + 1]]
+    /\ UNCHANGED <<up, phase, next, syncId, pushes, answeredBy, ledgerVars, toServer, toClient, running,
                    oldVars, crashes, faults, replacing, reset>>
+
+LosesUnread ==
+    /\ answeredBy # <<>>
+    /\ read >= answeredBy[1].last \/ Broken = "loseAtSync"
+    /\ Broken # "noLoseUnread"
+    /\ LET handledBefore(e) == e.num # 0 /\ e.num <= answeredBy[1].received
+           lost == SelectSeq(queue, handledBefore)
+       IN /\ answers' = answers \o [i \in DOMAIN lost |-> [id |-> lost[i].id, status |-> "lost"]]
+          /\ queue' = SelectSeq(queue, LAMBDA e : ~handledBefore(e))
+    /\ answeredBy' = <<>>
+    /\ UNCHANGED <<up, phase, next, syncId, pushes, read, ledgerVars, toServer, toClient, running,
+                   oldVars, crashes, faults, replacing, reset>>
+
+Forgets ==
+    /\ faults < MaxFaults
+    /\ ~up
+    /\ \E i \in (read + 1)..Len(log) :
+          log' = [log EXCEPT ![i].status = "forgotten"]
+    /\ faults' = faults + 1
+    /\ forgot' = TRUE
+    /\ UNCHANGED <<up, clientVars, received, known, handled, toServer, toClient, running, oldVars,
+                   crashes, replacing, reset>>
 
 ---------------------------------------------------------------------------
 
@@ -246,10 +269,12 @@ Begins(m, status) ==
     /\ handled' = Append(handled, [id |-> m.id, status |-> status])
     /\ received' = IF Broken = "countBeforeRecord" THEN m.num ELSE received
     /\ known' = known
+    /\ forgot' = forgot
 
 Records(r) ==
     /\ log' = Append(log, [num |-> r.num, status |-> r.status])
     /\ received' = r.num
+    /\ forgot' = forgot
 
 ServerTakes ==
     /\ ~gone
@@ -260,7 +285,7 @@ ServerTakes ==
     /\ LET m == Head(toServer)
        IN IF m.k = "sync"
           THEN /\ toClient' = Append(toClient,
-                                     [k |-> "syncReply", received |-> known, sid |-> m.sid])
+                                     [k |-> "syncReply", received |-> known, last |-> Len(log), sid |-> m.sid])
                /\ UNCHANGED <<ledgerVars, running>>
           ELSE IF m.num = known + 1
           THEN \E status \in {"ok", "error"} :
@@ -347,14 +372,14 @@ ErrorArrives ==
     /\ toClient' = Tail(toClient)
     /\ up' = FALSE
     /\ phase' = "away"
-    /\ UNCHANGED <<queue, next, syncId, answers, pushes, read, ledgerVars, toServer, running,
+    /\ UNCHANGED <<queue, next, syncId, answers, pushes, read, answeredBy, ledgerVars, toServer, running,
                    oldVars, crashes, faults, replacing, reset>>
 
 ---------------------------------------------------------------------------
 
 Progress ==
     \/ Joins \/ ServerReplaces
-    \/ SyncReplyArrives \/ AnswerArrives \/ AnswerRead \/ ErrorArrives \/ Unmatched
+    \/ SyncReplyArrives \/ AnswerArrives \/ AnswerRead \/ LosesUnread \/ ErrorArrives \/ Unmatched
     \/ ServerTakes \/ ServerRecords
     \/ OldTakes \/ OldRecords
 
@@ -364,7 +389,7 @@ Done == Settled /\ UNCHANGED vars
 Next ==
     \/ Progress
     \/ Drops \/ ServerCrashes \/ ReplaceKills \/ SyncTimesOut \/ ServerCannotTake \/ Replaced
-    \/ LedgerResets
+    \/ LedgerResets \/ Forgets
     \/ AppPushes
     \/ Done
 
@@ -384,7 +409,8 @@ AnsweredOnce == \A i, j \in DOMAIN answers : i < j => answers[i].id # answers[j]
 AnsweredAsHandled ==
     reset = "no" => \A i \in DOMAIN answers : answers[i].status = "lost" \/ answers[i] \in Range(handled)
 
-LostOnlyAfterReset == reset = "no" => \A i \in DOMAIN answers : answers[i].status # "lost"
+LostOnlyWhenForgotten ==
+    reset = "no" /\ ~forgot => \A i \in DOMAIN answers : answers[i].status # "lost"
 
 OnlyTakenAreAnswered == \A i \in DOMAIN answers : answers[i].status \notin {"notTaken", "unmatched"}
 

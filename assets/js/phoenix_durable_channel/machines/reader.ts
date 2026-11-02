@@ -18,6 +18,7 @@ export type ReaderEmitted =
   | { type: "deliver"; message: StreamMessage }
   | { type: "skipped"; after: number; next: number }
   | { type: "read"; read: number; after: number }
+  | { type: "readTo"; after: number }
 
 export type ReadingInput = { published: PublishedReader; from: Position }
 
@@ -66,6 +67,7 @@ const reader = setup({
         if (next > context.from.after + 1)
           enqueue.emit({ type: "skipped", after: context.from.after, next })
         if (message) enqueue.emit({ type: "deliver", message })
+        enqueue.emit({ type: "readTo", after: Math.max(context.from.after, after) })
         enqueue.assign({
           from: { ...context.from, after: Math.max(context.from.after, after) },
           tries: message ? 0 : context.tries,

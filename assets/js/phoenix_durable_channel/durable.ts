@@ -62,9 +62,15 @@ export class Durable implements ChannelExtension {
           case "sync":
             return channel
               .push(CHANNEL_EVENTS.sync)
-              .receive("ok", (response) =>
-                this.log.actor.send({ type: "SYNCED", ...decodeSyncReply(response) }),
-              )
+              .receive("ok", (response) => {
+                const { published, from } = this.reader.getSnapshot().context
+                this.log.actor.send({
+                  type: "SYNCED",
+                  ...decodeSyncReply(response),
+                  last: published.last,
+                })
+                this.log.actor.send({ type: "READ", after: from.after })
+              })
               .receive("timeout", () => this.log.actor.send({ type: "SYNC_FAILED" }))
           case "send":
             return socket.push({
@@ -108,6 +114,8 @@ export class Durable implements ChannelExtension {
                 ...decodeDurableReply(event.message.payload),
               })
             return trigger(event.message.event, event.message.payload)
+          case "readTo":
+            return this.log.actor.send({ type: "READ", after: event.after })
           case "skipped":
             socket.log(
               "channel",

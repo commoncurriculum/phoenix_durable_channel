@@ -139,8 +139,9 @@ defmodule PhoenixDurableChannel.Channel do
     end)
 
     stream = stream_for.(socket)
+    socket = Phoenix.Socket.assign(socket, :phx_received, stream.received(socket))
     Phoenix.Channel.push(socket, "phx_reader", stream.reader(socket))
-    {:noreply, Phoenix.Socket.assign(socket, :phx_received, stream.received(socket))}
+    {:noreply, socket}
   end
 
   def unexpected_message(message, socket) do

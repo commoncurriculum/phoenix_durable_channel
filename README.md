@@ -252,7 +252,8 @@ Both directions are one list: the topic's stream.
 - The server reads `received` once, at the join, and counts on from it in the channel's assigns: the join makes its process the only one taking the client's pushes. A stream reset while the process runs changes nothing until the next join, which reads it again.
 - The client numbers its pushes on from there and sends them in order. The server runs push n and appends its answer, a `phx_reply` message `{number, status, response}`, with `received` n in the same append, so the count and the answer are written together, as Kafka Streams commits its input offset with its output. The client reads the answer like any other durable message.
 - After a rejoin the client keeps waiting on the pushes at or below `received`, whose answers are in the stream, and numbers the rest on from `received` + 1 and sends them again. A push numbered at or below the count is not run again.
-- Answers are appended in the order the pushes were numbered, so reading the answer to n means every earlier push still waiting lost its answer, when the store forgot it: those are answered `{:error, %{reason: "reply_lost"}}`. A push whose answer was forgotten waits until a later answer is read, or its channel closes.
+- The server reads `received` before it pushes `phx_reader`, so every answer counted in `received` is at or before that reader's `last`. Once the client has read to that `last`, a push at or below `received` still waiting lost its answer, when the store forgot it: it is answered `{:error, %{reason: "reply_lost"}}`.
+- A push is answered only as far as the client reads: on a type the client has no reader for, or while its reader backs off, it waits until its channel closes.
 - A stop's answer is also sent to the client as a plain reply, since a read from the store's own protocol stops with the channel. The client takes whichever arrives first.
 - A push the server can't take now (`{:retry, reason, socket}`) is sent again, with the ones after it, after a backoff.
 - On `S2` and `DurableStreams` an answer comes through the store's own read, so it waits for the store's append and the client's read, and a page with more reads open to one HTTP/1.1 host than the browser allows at once (six in Chrome) gets no answers on the rest. Serve the store over HTTP/2.
@@ -302,7 +303,7 @@ socket.channel(topic, params, {
 })
 ```
 
-`published` is the last `phx_reader` when the read starts. `refresh(signal)` asks the channel for a fresh reader, and rejects when the server will not give one or the signal aborts: fail the read after it either way (`callbacks.failed`), and the channel reads again. `callbacks.passed(number)` tells the client a number is no message, as an S2 command record is. A `MessageStream` may deliver a message again: the client drops any at or before the last one it delivered. A type the client has no reader for is logged to the console, and its messages are not read.
+`published` is the last `phx_reader` when the read starts. `refresh(signal)` asks the channel for a fresh reader, and rejects when the server will not give one or the signal aborts: fail the read after it either way (`callbacks.failed`), and the channel reads again. `callbacks.passed(number)` tells the client a number is no message, as an S2 command record is. A `MessageStream` may deliver a message again: the client drops any at or before the last one it delivered. A type the client has no reader for is logged to the console, its messages are not read, and its durable pushes are not answered until the channel closes.
 
 ## Tests
 
