@@ -18,9 +18,7 @@ defmodule Phoenix.Test.ChannelTest do
 
   defmodule EmptyChannel do
     use Phoenix.Channel
-    use PhoenixDurableChannel.Channel,
-      ledger: PhoenixDurableChannel.Stream.Memory,
-      stream: PhoenixDurableChannel.Stream.Memory
+    use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Memory
 
     def join(_, _, socket), do: {:ok, socket}
 
@@ -31,9 +29,7 @@ defmodule Phoenix.Test.ChannelTest do
 
   defmodule Channel do
     use Phoenix.Channel
-    use PhoenixDurableChannel.Channel,
-      ledger: PhoenixDurableChannel.Stream.Memory,
-      stream: PhoenixDurableChannel.Stream.Memory
+    use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Memory
 
     intercept ["stop"]
 
@@ -152,9 +148,7 @@ defmodule Phoenix.Test.ChannelTest do
 
   defmodule CodeChangeChannel do
     use Phoenix.Channel
-    use PhoenixDurableChannel.Channel,
-      ledger: PhoenixDurableChannel.Stream.Memory,
-      stream: PhoenixDurableChannel.Stream.Memory
+    use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Memory
 
     def join(_topic, _params, socket), do: {:ok, socket}
 

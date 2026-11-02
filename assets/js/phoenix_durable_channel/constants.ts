@@ -47,8 +47,6 @@ export const CHANNEL_EVENTS = {
   skipped: "phx_skipped",
 } as const
 
-export const DURABLE_WINDOW = 32
-
 export const TRANSPORTS = {
   longpoll: "longpoll",
   websocket: "websocket",

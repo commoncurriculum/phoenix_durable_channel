@@ -11,8 +11,7 @@ config :logger, level: :info
 
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.Mongo,
   name: JepsenServer.Mongo,
-  messages: "messages",
-  replies: "replies"
+  messages: "messages"
 
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.S2,
   name: JepsenServer.S2,

@@ -19,8 +19,7 @@ config :phoenix_durable_channel, PhoenixDurableChannel.Stream.S2,
 
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.Mongo,
   name: TestServer.Mongo,
-  messages: "messages",
-  replies: "replies"
+  messages: "messages"
 
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.DurableStreams,
   url: "http://127.0.0.1:#{System.get_env("PORT", "4400")}/durable-streams",

@@ -3,17 +3,14 @@ defmodule PhoenixDurableChannel.Channel do
 
   @replace_timeout 5_000
   @page 500
-  @replies_kept 32
 
   defmacro __using__(options) do
     quote do
       @before_compile PhoenixDurableChannel.Channel
 
-      def durable_ledger(_socket), do: unquote(Keyword.fetch!(options, :ledger))
-
       def durable_stream(_socket), do: unquote(Keyword.fetch!(options, :stream))
 
-      defoverridable durable_ledger: 1, durable_stream: 1
+      defoverridable durable_stream: 1
 
       def push_durable(socket, event, payload) when is_map(payload),
         do:
@@ -41,7 +38,7 @@ defmodule PhoenixDurableChannel.Channel do
         quote do
           def handle_in(event, {:durable, number, payload}, socket) do
             PhoenixDurableChannel.Channel.handle_durable(
-              durable_ledger(socket),
+              durable_stream(socket),
               number,
               socket,
               fn socket ->
@@ -63,7 +60,6 @@ defmodule PhoenixDurableChannel.Channel do
         do:
           PhoenixDurableChannel.Channel.join(
             params,
-            &durable_ledger/1,
             &durable_stream/1,
             fn -> super(topic, params, socket) end
           )
@@ -92,33 +88,32 @@ defmodule PhoenixDurableChannel.Channel do
       def handle_info(:phx_replaced, socket),
         do: PhoenixDurableChannel.Channel.replaced(socket)
 
-      def handle_info({:phx_durable_joined, ledger_for, stream_for}, socket),
-        do: PhoenixDurableChannel.Channel.joined(ledger_for, stream_for, socket)
+      def handle_info({:phx_durable_joined, stream_for}, socket),
+        do: PhoenixDurableChannel.Channel.joined(stream_for, socket)
 
       def handle_info(message, socket), do: unquote(other_message)
     end
   end
 
-  def join(%{"phx_durable" => true}, ledger_for, stream_for, join) do
-    send(self(), {:phx_durable_joined, ledger_for, stream_for})
+  def join(%{"phx_durable" => true}, stream_for, join) do
+    send(self(), {:phx_durable_joined, stream_for})
 
     case join.() do
       {:ok, socket} ->
-        {:ok, %{phx_durable: true},
-         Phoenix.Socket.assign(socket, phx_durable: true, phx_replies: %{})}
+        {:ok, %{phx_durable: true}, Phoenix.Socket.assign(socket, phx_durable: true)}
 
       {:ok, reply, socket} when is_map(reply) ->
         {:ok, Map.put(reply, :phx_durable, true),
-         Phoenix.Socket.assign(socket, phx_durable: true, phx_replies: %{})}
+         Phoenix.Socket.assign(socket, phx_durable: true)}
 
       result ->
         result
     end
   end
 
-  def join(_params, _ledger_for, _stream_for, join), do: join.()
+  def join(_params, _stream_for, join), do: join.()
 
-  def joined(ledger_for, stream_for, socket) do
+  def joined(stream_for, socket) do
     name = {__MODULE__, socket.topic}
 
     :global.trans({name, self()}, fn ->
@@ -143,8 +138,9 @@ defmodule PhoenixDurableChannel.Channel do
       :yes = :global.re_register_name(name, self())
     end)
 
-    Phoenix.Channel.push(socket, "phx_reader", stream_for.(socket).reader(socket))
-    {:noreply, Phoenix.Socket.assign(socket, :phx_received, ledger_for.(socket).received(socket))}
+    stream = stream_for.(socket)
+    Phoenix.Channel.push(socket, "phx_reader", stream.reader(socket))
+    {:noreply, Phoenix.Socket.assign(socket, :phx_received, stream.received(socket))}
   end
 
   def unexpected_message(message, socket) do
@@ -164,8 +160,11 @@ defmodule PhoenixDurableChannel.Channel do
     {:stop, {:shutdown, :replaced}, socket}
   end
 
-  def push_durable(stream, socket, event, payload) do
-    number = stream.append(socket, event, payload)
+  def push_durable(stream, socket, event, payload),
+    do: push_durable(stream, socket, event, payload, Map.get(socket.assigns, :phx_received, 0))
+
+  def push_durable(stream, socket, event, payload, received) do
+    number = stream.append(socket, event, payload, received)
 
     cond do
       socket.assigns[:phx_durable] != true ->
@@ -204,17 +203,12 @@ defmodule PhoenixDurableChannel.Channel do
       else: {:reply, {:ok, %{sent: page.sent, epoch: page.epoch}}, socket}
   end
 
-  def handle_durable(ledger, number, socket, handle_in) do
+  def handle_durable(stream, number, socket, handle_in) do
     received = socket.assigns.phx_received
 
     cond do
       number <= received ->
-        kept =
-          Map.get_lazy(socket.assigns.phx_replies, number, fn ->
-            ledger.reply(socket, number) || {:error, %{reason: "reply_lost"}}
-          end)
-
-        {:reply, kept, socket}
+        {:noreply, socket}
 
       number > received + 1 ->
         {:reply, {:error, %{phx_not_taken: "out_of_order"}}, socket}
@@ -234,37 +228,39 @@ defmodule PhoenixDurableChannel.Channel do
             {:reply, {:error, %{phx_not_taken: reason}}, socket}
 
           {:noreply, socket} ->
-            record(ledger, number, {:ok, %{}}, socket, &{:reply, &1, &2})
+            {:noreply, answer(stream, number, {:ok, %{}}, socket)}
 
           {:noreply, socket, _timeout_or_hibernate} ->
-            record(ledger, number, {:ok, %{}}, socket, &{:reply, &1, &2})
+            {:noreply, answer(stream, number, {:ok, %{}}, socket)}
 
           {:reply, status, socket} when is_atom(status) ->
-            record(ledger, number, {status, %{}}, socket, &{:reply, &1, &2})
+            {:noreply, answer(stream, number, {status, %{}}, socket)}
 
           {:reply, reply, socket} ->
-            record(ledger, number, reply, socket, &{:reply, &1, &2})
+            {:noreply, answer(stream, number, reply, socket)}
 
           {:stop, reason, socket} ->
-            record(ledger, number, {:ok, %{}}, socket, &{:stop, reason, &1, &2})
+            {:stop, reason, {:ok, %{}}, answer(stream, number, {:ok, %{}}, socket)}
 
           {:stop, reason, status, socket} when is_atom(status) ->
-            record(ledger, number, {status, %{}}, socket, &{:stop, reason, &1, &2})
+            {:stop, reason, {status, %{}}, answer(stream, number, {status, %{}}, socket)}
 
           {:stop, reason, reply, socket} ->
-            record(ledger, number, reply, socket, &{:stop, reason, &1, &2})
+            {:stop, reason, reply, answer(stream, number, reply, socket)}
         end
     end
   end
 
-  def record(ledger, number, reply, socket, answer) do
-    :ok = ledger.put_received(socket, number, reply)
+  def answer(stream, number, {status, response}, socket) do
+    :ok =
+      push_durable(
+        stream,
+        socket,
+        "phx_reply",
+        %{number: number, status: status, response: response},
+        number
+      )
 
-    replies =
-      socket.assigns.phx_replies
-      |> Map.put(number, reply)
-      |> Map.delete(number - @replies_kept)
-
-    answer.(reply, Phoenix.Socket.assign(socket, phx_received: number, phx_replies: replies))
+    Phoenix.Socket.assign(socket, :phx_received, number)
   end
 end

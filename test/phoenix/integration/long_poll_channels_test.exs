@@ -25,9 +25,7 @@ defmodule Phoenix.Integration.LongPollChannelsTest do
 
   defmodule RoomChannel do
     use Phoenix.Channel, log_join: :info, log_handle_in: :info
-    use PhoenixDurableChannel.Channel,
-      ledger: PhoenixDurableChannel.Stream.Memory,
-      stream: PhoenixDurableChannel.Stream.Memory
+    use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Memory
 
     intercept ["new_msg", "bin_ack"]
 

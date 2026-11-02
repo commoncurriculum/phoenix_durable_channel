@@ -262,7 +262,11 @@ defmodule TestServer.SlowMemory do
   alias PhoenixDurableChannel.Stream.Memory
 
   @impl true
-  def append(socket, event, payload), do: Memory.append(socket, event, payload)
+  def append(socket, event, payload, received),
+    do: Memory.append(socket, event, payload, received)
+
+  @impl true
+  def received(socket), do: Memory.received(socket)
 
   @impl true
   def reader(socket), do: Memory.reader(socket)
@@ -282,7 +286,11 @@ defmodule TestServer.Unreadable do
   alias PhoenixDurableChannel.Stream.Memory
 
   @impl true
-  def append(socket, event, payload), do: Memory.append(socket, event, payload)
+  def append(socket, event, payload, received),
+    do: Memory.append(socket, event, payload, received)
+
+  @impl true
+  def received(socket), do: Memory.received(socket)
 
   @impl true
   def reader(socket), do: Memory.reader(socket)
@@ -292,8 +300,11 @@ defmodule TestServer.Elsewhere do
   @behaviour PhoenixDurableChannel.Stream
 
   @impl true
-  def append(socket, event, payload),
-    do: PhoenixDurableChannel.Stream.S2.append(socket, event, payload)
+  def append(socket, event, payload, received),
+    do: PhoenixDurableChannel.Stream.S2.append(socket, event, payload, received)
+
+  @impl true
+  def received(socket), do: PhoenixDurableChannel.Stream.S2.received(socket)
 
   @impl true
   def reader(socket),
@@ -309,7 +320,11 @@ defmodule TestServer.ExpiringDurableStreams do
   alias PhoenixDurableChannel.Stream.DurableStreams
 
   @impl true
-  def append(socket, event, payload), do: DurableStreams.append(socket, event, payload)
+  def append(socket, event, payload, received),
+    do: DurableStreams.append(socket, event, payload, received)
+
+  @impl true
+  def received(socket), do: DurableStreams.received(socket)
 
   @impl true
   def reader(socket) do
@@ -362,9 +377,7 @@ end
 defmodule TestServer.DurableChannel do
   use Phoenix.Channel
 
-  use PhoenixDurableChannel.Channel,
-    ledger: PhoenixDurableChannel.Stream.Memory,
-    stream: PhoenixDurableChannel.Stream.Memory
+  use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Memory
 
   alias PhoenixDurableChannel.Stream.Memory
   alias PhoenixDurableChannel.Stream.Mongo
@@ -385,8 +398,6 @@ defmodule TestServer.DurableChannel do
 
   def durable_stream(socket), do: Map.get(@streams, socket.assigns[:stream], Memory)
 
-  def durable_ledger(socket), do: Map.get(@stores, socket.assigns[:ledger], Memory)
-
   @impl true
   def join(topic, %{"refuse" => true}, _socket) do
     TestServer.Joins.increment("refused:" <> topic)
@@ -398,10 +409,7 @@ defmodule TestServer.DurableChannel do
     if params["busy_after_join"], do: send(self(), :busy)
     if params["not_durable"], do: send(self(), :not_durable)
 
-    if params["forget_replies"],
-      do: :ets.insert(Memory, {socket.topic, %{Memory.kept(socket.topic) | replies: %{}}})
-
-    {:ok, assign(socket, stream: params["stream"], ledger: params["ledger"])}
+    {:ok, assign(socket, stream: params["stream"])}
   end
 
   @impl true
@@ -424,7 +432,9 @@ defmodule TestServer.DurableChannel do
   end
 
   def handle_in("publish_silently", %{"body" => body}, socket) do
-    number = durable_stream(socket).append(socket, "update", %{body: body})
+    number =
+      durable_stream(socket).append(socket, "update", %{body: body}, socket.assigns.phx_received)
+
     {:reply, {:ok, %{number: number}}, socket}
   end
 
@@ -457,13 +467,10 @@ defmodule TestServer.DurableChannel do
     do: {:reply, {:ok, %{durable: Map.get(socket.assigns, :phx_durable, false)}}, socket}
 
   def handle_in("ledger", _payload, socket) do
-    received = durable_ledger(socket).received(socket)
+    received = durable_stream(socket).received(socket)
     sent = durable_stream(socket).reader(socket).last
     {:reply, {:ok, %{received: received, sent: sent}}, socket}
   end
-
-  def handle_in("reply_of", %{"number" => number}, socket),
-    do: {:reply, {:ok, %{found: durable_ledger(socket).reply(socket, number) != nil}}, socket}
 
   def handle_in("counts", %{"topic" => topic}, socket),
     do:
@@ -520,7 +527,12 @@ defmodule TestServer.DurableChannel do
 
   def handle_in("publish_many_silently", %{"count" => count}, socket) do
     Enum.each(1..count, fn number ->
-      durable_stream(socket).append(socket, "update", %{body: number})
+      durable_stream(socket).append(
+        socket,
+        "update",
+        %{body: number},
+        socket.assigns.phx_received
+      )
     end)
 
     {:reply, :ok, socket}

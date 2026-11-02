@@ -1,10 +1,7 @@
 defmodule PhoenixDurableChannel.Stream.Memory do
-  @behaviour PhoenixDurableChannel.Ledger
   @behaviour PhoenixDurableChannel.Stream
   @behaviour PhoenixDurableChannel.Stream.ThroughChannel
   use GenServer
-
-  @replies_kept 64
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
@@ -24,25 +21,16 @@ defmodule PhoenixDurableChannel.Stream.Memory do
   end
 
   @impl GenServer
-  def handle_call({:append, topic, event, payload}, _from, state) do
+  def handle_call({:append, topic, event, payload, received}, _from, state) do
     kept = kept(topic)
     number = kept.latest + 1
 
     messages =
       Enum.take([%{number: number, event: event, payload: payload} | kept.messages], state.kept)
 
-    put(topic, %{kept | latest: number, messages: messages})
+    put(topic, %{kept | latest: number, messages: messages, received: received})
+
     {:reply, number, state}
-  end
-
-  def handle_call({:put_received, topic, number, reply}, _from, state) do
-    kept = kept(topic)
-
-    replies =
-      kept.replies |> Map.put(number, reply) |> Map.delete(number - @replies_kept)
-
-    put(topic, %{kept | received: max(kept.received, number), replies: replies})
-    {:reply, :ok, state}
   end
 
   def handle_call({:watch, topic, channel}, _from, state) do
@@ -99,24 +87,16 @@ defmodule PhoenixDurableChannel.Stream.Memory do
           epoch: Base.url_encode64(:crypto.strong_rand_bytes(9)),
           latest: 0,
           messages: [],
-          received: 0,
-          replies: %{}
+          received: 0
         }
     end
   end
 
-  @impl PhoenixDurableChannel.Ledger
+  @impl PhoenixDurableChannel.Stream
   def received(socket) do
     :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})
     kept(socket.topic).received
   end
-
-  @impl PhoenixDurableChannel.Ledger
-  def put_received(socket, number, reply),
-    do: GenServer.call(__MODULE__, {:put_received, socket.topic, number, reply})
-
-  @impl PhoenixDurableChannel.Ledger
-  def reply(socket, number), do: Map.get(kept(socket.topic).replies, number)
 
   def put(topic, kept),
     do:
@@ -126,8 +106,8 @@ defmodule PhoenixDurableChannel.Stream.Memory do
       )
 
   @impl PhoenixDurableChannel.Stream
-  def append(socket, event, payload),
-    do: GenServer.call(__MODULE__, {:append, socket.topic, event, payload})
+  def append(socket, event, payload, received),
+    do: GenServer.call(__MODULE__, {:append, socket.topic, event, payload, received})
 
   @impl PhoenixDurableChannel.Stream.ThroughChannel
   def since(socket, number, limit) do

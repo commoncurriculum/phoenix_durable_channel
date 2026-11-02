@@ -1,6 +1,5 @@
-import { assign, emit, enqueueActions, setup } from "xstate"
+import { and, assign, emit, enqueueActions, not, setup } from "xstate"
 import { backoff, type Data } from "../actors"
-import { DURABLE_WINDOW } from "../constants"
 import { isNotTaken } from "../wire"
 
 export interface Sent {
@@ -18,6 +17,7 @@ export interface Entry {
 type LogEvent =
   | { type: "PUSH"; id: string; event: string; payload: unknown }
   | { type: "REPLY"; ref: string | null; status: string; response: unknown }
+  | { type: "ANSWERED"; number: number; status: string; response: unknown }
   | { type: "CHANNEL_JOINED" }
   | { type: "CHANNEL_LEFT" }
   | { type: "CHANNEL_CLOSED" }
@@ -36,30 +36,19 @@ type LogContext = Data<{
   tries: number
 }>
 
-type ReplyEvent = Extract<LogEvent, { type: "REPLY" }>
-
-const answered = (context: LogContext, event: ReplyEvent) =>
-  context.queue.filter((entry) => entry.sent !== null && entry.sent.ref === event.ref)
-
-const notTaken = (event: ReplyEvent) => event.status === "error" && isNotTaken(event.response)
-
 function numberWaiting(
   queue: ReadonlyArray<Entry>,
   next: number,
   syncs: number,
 ): { queue: ReadonlyArray<Entry>; next: number; sending: ReadonlyArray<Entry & { sent: Sent }> } {
   const firstWaiting = queue.findIndex((entry) => entry.sent === null)
-  if (firstWaiting === -1 || firstWaiting >= DURABLE_WINDOW) return { queue, next, sending: [] }
-  const sending = queue.slice(firstWaiting, DURABLE_WINDOW).map((entry, index) => ({
+  if (firstWaiting === -1) return { queue, next, sending: [] }
+  const sending = queue.slice(firstWaiting).map((entry, index) => ({
     ...entry,
     sent: { number: next + index, ref: `d${syncs}.${next + index}` },
   }))
   return {
-    queue: [
-      ...queue.slice(0, firstWaiting),
-      ...sending,
-      ...queue.slice(firstWaiting + sending.length),
-    ],
+    queue: [...queue.slice(0, firstWaiting), ...sending],
     next: next + sending.length,
     sending,
   }
@@ -73,8 +62,10 @@ export const logMachine = setup({
   },
   actors: { waitToSync: backoff(Number) },
   guards: {
-    notTaken: ({ context, event }) =>
-      event.type === "REPLY" && answered(context, event).length > 0 && notTaken(event),
+    isNotTaken: ({ event }) =>
+      event.type === "REPLY" && event.status === "error" && isNotTaken(event.response),
+    isQueued: ({ context, event }) =>
+      event.type === "REPLY" && context.queue.some((entry) => entry.sent?.ref === event.ref),
   },
   actions: {
     enqueue: assign(({ context }, entry: Entry) => ({
@@ -86,26 +77,33 @@ export const logMachine = setup({
       for (const { event, payload, sent } of sending)
         enqueue.emit({ type: "send", event, payload, sent })
     }),
-    answer: enqueueActions(({ context, enqueue }, event: ReplyEvent) => {
-      if (notTaken(event)) return
-      for (const entry of answered(context, event))
-        enqueue.emit({
-          type: "answer",
-          id: entry.id,
-          status: event.status === "ok" ? "ok" : "error",
-          response: event.response,
+    answer: enqueueActions(
+      ({ context, enqueue }, event: Extract<LogEvent, { type: "ANSWERED" }>) => {
+        for (const entry of context.queue.filter((entry) => entry.sent?.number === event.number))
+          enqueue.emit({
+            type: "answer",
+            id: entry.id,
+            status: event.status === "ok" ? "ok" : "error",
+            response: event.response,
+          })
+        enqueue.assign({
+          queue: context.queue.filter((entry) => entry.sent?.number !== event.number),
         })
-      enqueue.assign({
-        queue: context.queue.filter((entry) => entry.sent === null || entry.sent.ref !== event.ref),
-      })
-    }),
+      },
+    ),
     sync: emit({ type: "sync" }),
     applySync: enqueueActions(({ context, enqueue }, received: number) => {
-      const unsent = context.queue.map((entry) => ({ ...entry, sent: null }))
+      const handled = context.queue.findIndex(
+        (entry) => entry.sent === null || entry.sent.number > received,
+      )
+      const kept = handled === -1 ? context.queue.length : handled
       const syncs = context.syncs + 1
       const { queue, next, sending } = numberWaiting(
-        unsent,
-        Math.min(context.queue[0]?.sent?.number ?? received + 1, received + 1),
+        [
+          ...context.queue.slice(0, kept),
+          ...context.queue.slice(kept).map((entry) => ({ ...entry, sent: null })),
+        ],
+        received + 1,
         syncs,
       )
       enqueue.assign({ queue, next, syncs, tries: 0 })
@@ -129,7 +127,19 @@ export const logMachine = setup({
         params: ({ event }) => ({ ...event, sent: null }),
       },
     },
-    REPLY: { actions: { type: "answer", params: ({ event }) => event } },
+    ANSWERED: { actions: { type: "answer", params: ({ event }) => event } },
+    REPLY: {
+      guard: not("isNotTaken"),
+      actions: {
+        type: "answer",
+        params: ({ context, event }) => ({
+          type: "ANSWERED" as const,
+          number: context.queue.find((entry) => entry.sent?.ref === event.ref)?.sent?.number ?? 0,
+          status: event.status,
+          response: event.response,
+        }),
+      },
+    },
     CHANNEL_LEFT: ".away",
     CHANNEL_CLOSED: { target: ".closed", actions: "abandon" },
   },
@@ -163,12 +173,7 @@ export const logMachine = setup({
             "sendWaiting",
           ],
         },
-        REPLY: [
-          { guard: "notTaken", target: "backingOff" },
-          {
-            actions: [{ type: "answer", params: ({ event }) => event }, "sendWaiting"],
-          },
-        ],
+        REPLY: { guard: and(["isNotTaken", "isQueued"]), target: "backingOff" },
       },
     },
     closed: {

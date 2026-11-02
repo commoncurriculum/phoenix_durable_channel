@@ -71,9 +71,7 @@ end
 defmodule JepsenServer.Channel do
   use Phoenix.Channel
 
-  use PhoenixDurableChannel.Channel,
-    ledger: Application.fetch_env!(:jepsen_server, :store),
-    stream: Application.fetch_env!(:jepsen_server, :store)
+  use PhoenixDurableChannel.Channel, stream: Application.fetch_env!(:jepsen_server, :store)
 
   @impl true
   def join(_topic, _params, socket), do: {:ok, socket}

@@ -15,7 +15,13 @@ import {
   type ReaderFactory,
 } from "./stream"
 import type { Params } from "./url"
-import { decodePublishedReader, decodeReadReply, decodeSyncReply, isDurableJoinReply } from "./wire"
+import {
+  decodeDurableReply,
+  decodePublishedReader,
+  decodeReadReply,
+  decodeSyncReply,
+  isDurableJoinReply,
+} from "./wire"
 
 const unread: MessageStream = { read: () => ignore }
 
@@ -96,6 +102,11 @@ export class Durable implements ChannelExtension {
       (event) => {
         switch (event.type) {
           case "deliver":
+            if (event.message.event === CHANNEL_EVENTS.reply)
+              return this.log.actor.send({
+                type: "ANSWERED",
+                ...decodeDurableReply(event.message.payload),
+              })
             return trigger(event.message.event, event.message.payload)
           case "skipped":
             socket.log(

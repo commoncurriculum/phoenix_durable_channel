@@ -1,10 +1,11 @@
 defmodule PhoenixDurableChannel.Stream.S2 do
-  @behaviour PhoenixDurableChannel.Ledger
   @behaviour PhoenixDurableChannel.Stream
 
   @impl PhoenixDurableChannel.Stream
-  def append(socket, event, payload) do
-    record = %S2.V1.AppendRecord{body: Jason.encode!(%{event: event, payload: payload})}
+  def append(socket, event, payload, received) do
+    record = %S2.V1.AppendRecord{
+      body: Jason.encode!(%{event: event, payload: payload, received: received})
+    }
 
     case S2.append(config()[:name], socket.topic, [record]) do
       {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} ->
@@ -61,51 +62,23 @@ defmodule PhoenixDurableChannel.Stream.S2 do
     end
   end
 
-  def replies(topic), do: topic <> "/replies"
-
-  @impl PhoenixDurableChannel.Ledger
+  @impl PhoenixDurableChannel.Stream
   def received(socket) do
-    case S2.read(config()[:name], replies(socket.topic), tail_offset: 1, count: 1, clamp: true) do
-      {:ok, %S2.V1.ReadBatch{records: [record]}} -> Jason.decode!(record.body)["number"]
-      {:error, %S2.Error{status: 416}} -> 0
-      {:error, error} -> raise "S2 refused a read of #{replies(socket.topic)}: #{inspect(error)}"
-    end
-  end
-
-  @impl PhoenixDurableChannel.Ledger
-  def put_received(socket, number, {status, response}) do
-    body = Jason.encode!(%{number: number, status: status, response: response})
-
-    case S2.append(config()[:name], replies(socket.topic), [%S2.V1.AppendRecord{body: body}]) do
-      {:ok, _ack} -> :ok
-      {:error, error} -> raise "S2 refused a reply to #{socket.topic}: #{inspect(error)}"
-    end
-  end
-
-  @impl PhoenixDurableChannel.Ledger
-  def reply(socket, number), do: reply(socket, number, number - 1)
-
-  def reply(socket, number, from) do
-    case S2.read(config()[:name], replies(socket.topic), seq_num: from, count: 64) do
-      {:ok, %S2.V1.ReadBatch{records: []}} ->
-        nil
-
-      {:ok, %S2.V1.ReadBatch{records: records}} ->
-        replies = Enum.map(records, fn record -> Jason.decode!(record.body) end)
-
-        case Enum.find(replies, fn reply -> reply["number"] == number end) do
-          %{"status" => status, "response" => response} ->
-            {String.to_existing_atom(status), response}
-
-          nil ->
-            reply(socket, number, from + length(records))
+    case S2.read(config()[:name], socket.topic, tail_offset: 1, count: 1, clamp: true) do
+      {:ok, %S2.V1.ReadBatch{records: [record]}} ->
+        case Jason.decode(record.body) do
+          {:ok, %{"received" => received}} -> received
+          _command -> 0
         end
 
+      {:ok, %S2.V1.ReadBatch{records: []}} ->
+        0
+
       {:error, %S2.Error{status: 416}} ->
-        nil
+        0
 
       {:error, error} ->
-        raise "S2 refused a read of #{replies(socket.topic)}: #{inspect(error)}"
+        raise "S2 refused a read of #{socket.topic}: #{inspect(error)}"
     end
   end
 

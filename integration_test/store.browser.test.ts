@@ -11,10 +11,10 @@ function updates(channel: Channel): Array<string> {
 }
 
 test.each(["memory", "mongo", "s2", "durable-streams"])(
-  "the %s store is the channel's ledger and its stream",
+  "the %s store holds the channel's messages, its replies and its count",
   async (store) => {
     const topic = `durable:store-${store}:${Math.random().toString(36).slice(2)}`
-    const params = { ledger: store, stream: store }
+    const params = { stream: store }
     const socket = openSocket("/socket", fast)
     socket.connect()
     const channel = socket.channel(topic, params, { durable: true, after: 0 })

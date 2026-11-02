@@ -229,6 +229,7 @@ export class Channel {
   }
 
   receiveMessage(message: Message): void {
+    if (message.number !== undefined) return this.extension.receive(message)
     switch (message.event) {
       case CHANNEL_EVENTS.reply:
         return this.receiveReply(message.ref, message.payload)

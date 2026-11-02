@@ -1,45 +1,47 @@
 defmodule PhoenixDurableChannel.Stream.Mongo do
-  @behaviour PhoenixDurableChannel.Ledger
   @behaviour PhoenixDurableChannel.Stream
   @behaviour PhoenixDurableChannel.Stream.ThroughChannel
 
   @epoch "mongo"
 
-  def create_indexes do
-    Enum.each([config()[:messages], config()[:replies]], fn collection ->
+  def create_indexes,
+    do:
       :ok =
-        Mongo.create_indexes(config()[:name], collection, [
+        Mongo.create_indexes(config()[:name], config()[:messages], [
           [key: [topic: 1, number: 1], name: "topic_number", unique: true]
         ])
-    end)
-  end
 
-  def last(collection, topic) do
-    document =
-      Mongo.find_one(config()[:name], collection, %{topic: topic},
+  def find_newest(topic),
+    do:
+      Mongo.find_one(config()[:name], config()[:messages], %{topic: topic},
         sort: [number: -1],
-        projection: %{number: 1}
-      )
+        projection: %{number: 1, received: 1}
+      ) || %{}
 
-    (document || %{})["number"] || 0
-  end
+  def last(topic), do: find_newest(topic)["number"] || 0
 
   @impl PhoenixDurableChannel.Stream
-  def append(socket, event, payload),
-    do: append(socket, event, payload, last(config()[:messages], socket.topic) + 1)
+  def append(socket, event, payload, received),
+    do: append(socket, event, payload, received, last(socket.topic) + 1)
 
-  def append(socket, event, payload, number) do
-    document = %{topic: socket.topic, number: number, event: event, payload: payload}
+  def append(socket, event, payload, received, number) do
+    document = %{
+      topic: socket.topic,
+      number: number,
+      event: event,
+      payload: payload,
+      received: received
+    }
 
     case Mongo.insert_one(config()[:name], config()[:messages], document) do
       {:ok, _result} ->
         number
 
       {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} ->
-        append(socket, event, payload)
+        append(socket, event, payload, received)
 
       {:error, %Mongo.Error{code: 11_000}} ->
-        append(socket, event, payload)
+        append(socket, event, payload, received)
 
       {:error, error} ->
         raise "Mongo refused an append to #{socket.topic}: #{Exception.message(error)}"
@@ -48,7 +50,7 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
 
   @impl PhoenixDurableChannel.Stream.ThroughChannel
   def since(socket, number, limit) do
-    latest = last(config()[:messages], socket.topic)
+    latest = last(socket.topic)
     sent = min(latest, number + limit)
 
     messages =
@@ -67,44 +69,10 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
   def epoch(_socket), do: @epoch
 
   @impl PhoenixDurableChannel.Stream
-  def reader(socket),
-    do: %{type: "phoenix", last: last(config()[:messages], socket.topic), epoch: @epoch}
+  def reader(socket), do: %{type: "phoenix", last: last(socket.topic), epoch: @epoch}
 
-  @impl PhoenixDurableChannel.Ledger
-  def received(socket), do: last(config()[:replies], socket.topic)
-
-  @impl PhoenixDurableChannel.Ledger
-  def put_received(socket, number, {status, response}) do
-    document = %{topic: socket.topic, number: number, status: status, response: response}
-
-    case Mongo.insert_one(config()[:name], config()[:replies], document) do
-      {:ok, _result} ->
-        :ok
-
-      {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} ->
-        :ok
-
-      {:error, %Mongo.Error{code: 11_000}} ->
-        :ok
-
-      {:error, error} ->
-        raise "Mongo refused reply #{number} to #{socket.topic}: #{Exception.message(error)}"
-    end
-  end
-
-  @impl PhoenixDurableChannel.Ledger
-  def reply(socket, number) do
-    case Mongo.find_one(config()[:name], config()[:replies], %{
-           topic: socket.topic,
-           number: number
-         }) do
-      %{"status" => status, "response" => response} ->
-        {String.to_existing_atom(status), response}
-
-      nil ->
-        nil
-    end
-  end
+  @impl PhoenixDurableChannel.Stream
+  def received(socket), do: find_newest(socket.topic)["received"] || 0
 
   def config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)
 end

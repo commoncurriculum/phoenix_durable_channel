@@ -29,9 +29,7 @@ defmodule Phoenix.Integration.WebSocketChannelsTest do
 
   defmodule RoomChannel do
     use Phoenix.Channel
-    use PhoenixDurableChannel.Channel,
-      ledger: PhoenixDurableChannel.Stream.Memory,
-      stream: PhoenixDurableChannel.Stream.Memory
+    use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Memory
 
     intercept ["new_msg"]
 
