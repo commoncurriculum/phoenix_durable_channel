@@ -71,3 +71,31 @@ jobs:
 
       - name: Model-check with TLA+
         run: verification/check.sh
+
+  every-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Every commit type checks
+        env:
+          FIRST: ${{ github.event.pull_request.base.sha || github.event.before }}
+          LAST: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$FIRST" ] || [ "$FIRST" = 0000000000000000000000000000000000000000 ]; then FIRST="$LAST~1"; fi
+          for commit in $(git rev-list --reverse "$FIRST..$LAST"); do
+            git checkout -q "$commit"
+            pnpm lint || { echo "$commit does not type check"; exit 1; }
+          done
