@@ -93,7 +93,7 @@ replyOnFirstPage CatchesUp PROPERTY
 readTimeout CatchesUp PROPERTY
 readWhileAway ReadOnlyWhileJoined INVARIANT
 deliversOld NothingAtOrBeforeAfter INVARIANT
-dropsOldWhileLive CatchesUp PROPERTY
+noEpochOnPush NothingLostButForgotten INVARIANT
 EOF
 
 check SocketBuffer "  MaxPush = 3

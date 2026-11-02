@@ -122,18 +122,19 @@ MessageArrives ==
     /\ Head(toClient).k = "msg"
     /\ toClient' = Tail(toClient)
     /\ LET m == Head(toClient)
+           ours == m.e = from.e \/ Broken = "noEpochOnPush"
        IN CASE read = "waiting" /\ Broken = "deliverOnArrival" ->
                   /\ Deliver(m)
                   /\ UNCHANGED <<read, held>>
             [] read = "waiting" ->
-                  /\ held' = held \cup {m.n}
+                  /\ held' = IF ours THEN held \cup {m.n} ELSE held
                   /\ UNCHANGED <<read, from, delivered>>
-            [] read \in {"live", "ahead"} /\ (m.n = from.after + 1
+            [] read \in {"live", "ahead"} /\ ours /\ (m.n = from.after + 1
                                   \/ (Broken = "noGapCheck" /\ m.n > from.after)) ->
                   /\ Deliver(m)
                   /\ read' = "live"
                   /\ UNCHANGED held
-            [] m.n <= from.after /\ (read = "ahead" \/ Broken = "dropsOldWhileLive") ->
+            [] ours /\ m.n <= from.after /\ read = "ahead" ->
                   UNCHANGED <<read, from, held, delivered>>
             [] read \in {"live", "ahead"} ->
                   /\ read' = "idle"
@@ -206,7 +207,7 @@ StoreStartsAgain ==
     /\ faults < MaxFaults
     /\ \E n \in Nodes, underConnection \in BOOLEAN :
         /\ nodeEpoch' = [nodeEpoch EXCEPT ![n] = newEpoch]
-        /\ IF at = n /\ ~(underConnection /\ read = "live" /\ from.after >= MaxPublish)
+        /\ IF at = n /\ ~underConnection
            THEN Lost
            ELSE UNCHANGED <<at, read, serving, toServer, toClient>>
     /\ newEpoch' = newEpoch + 1
