@@ -30,7 +30,7 @@ export type SocketEvent =
   | { type: "CONNECT" }
   | { type: "DISCONNECT"; code: number; reason: string }
   | { type: "PUSH"; message: Message }
-  | { type: "ENCODED"; data: string | ArrayBuffer }
+  | { type: "ENCODED"; data: string | ArrayBuffer; connection: number }
   | { type: "HEARTBEAT_REPLY"; ref: string }
   | { type: "ACTIVITY"; status: ActivityStatus }
   | { type: "SUSPEND" }
@@ -95,6 +95,8 @@ export const socketMachine = setup({
     waitToReconnect: backoff(Number),
   },
   guards: {
+    isThisConnection: ({ context, event }) =>
+      event.type === "ENCODED" && event.connection === context.establishedConnections,
     canFallBack: ({ context }) =>
       context.transport === "websocket" &&
       context.timing.longPollFallbackMs !== null &&
@@ -293,6 +295,7 @@ export const socketMachine = setup({
                       })),
                     },
                     ENCODED: {
+                      guard: "isThisConnection",
                       actions: sendTo("transport", ({ event }) => ({
                         type: "SEND" as const,
                         data: event.data,

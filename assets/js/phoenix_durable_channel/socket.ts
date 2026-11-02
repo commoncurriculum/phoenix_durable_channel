@@ -321,7 +321,9 @@ export class Socket {
         if (message.event === CHANNEL_EVENTS.join)
           for (const channel of this.channels)
             if (channel.topic === message.topic) channel.joinEncoded(message.ref, connection)
-        return this.encode(message, (data) => this.actor.send({ type: "ENCODED", data }))
+        return this.encode(message, (data) =>
+          this.actor.send({ type: "ENCODED", data, connection }),
+        )
       }
       case "buffered":
         return this.log("push", "buffered until the socket opens", event.message)

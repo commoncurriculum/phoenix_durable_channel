@@ -317,6 +317,37 @@ test("uses the encode and decode it is given", async () => {
   expect(encoded).toEqual(["phx_join"])
 })
 
+test("a frame that encode hands back after its connection closed is not sent on the next one", async () => {
+  const sent: Array<string> = []
+  class RecordedWebSocket extends WebSocket {
+    override send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      sent.push(String(data))
+      super.send(data)
+    }
+  }
+  const held: Array<() => void> = []
+  const socket = openSocket("/socket", {
+    transport: RecordedWebSocket,
+    encode: (message, callback) =>
+      Serializer.encode(message, (data) => {
+        if (message.event === "late") held.push(() => callback(data))
+        else callback(data)
+      }),
+  })
+  socket.connect()
+  const channel = socket.channel(topic("late"))
+  await join(channel)
+  channel.push("late", {})
+  expect(held).toHaveLength(1)
+
+  socket.disconnect()
+  socket.connect()
+  await waitFor(() => socket.isConnected() && channel.state === "joined")
+  held[0]!()
+  await answer(channel.push("echo", {}))
+  expect(sent.filter((data) => data.includes('"late"'))).toEqual([])
+})
+
 test("uses JSON over LongPoll whatever encode and decode it is given, as phoenix.js does", async () => {
   const custom = {
     encode: (_message: unknown, callback: (encoded: string) => void) => callback("custom"),
