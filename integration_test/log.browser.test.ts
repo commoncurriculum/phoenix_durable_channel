@@ -721,6 +721,26 @@ test("a store that numbers afresh before a topic's first message is read once, a
   expect(seen).toEqual(["1", "2", "3"])
 })
 
+test("a live read past the stream's last number ends on a message from another epoch, and delivers it", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const room = socket.channel(durableTopic("asks"))
+  await join(room)
+  const name = durableTopic("afresh ahead")
+  const reads = async () =>
+    ((await answer(room.push("counts", { topic: name }))).response as { reads: number }).reads
+  const channel = socket.channel(name, { stream: "slow" }, { durable: true, after: 3 })
+  const seen = updates(channel)
+  await join(channel)
+  await expect.poll(reads).toBe(1)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  await answer(channel.push("reset"))
+  await answer(channel.push("publish", { body: "other 1" }))
+  await waitFor(() => seen.length === 1)
+  expect(seen).toEqual(["other 1"])
+})
+
 test("a push in another epoch whose number is next in line ends the read, and what that epoch kept before it is delivered", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()
