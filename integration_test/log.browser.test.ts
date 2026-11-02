@@ -850,3 +850,19 @@ test("an S2 command record at the stream's tail leaves the count where the last 
   await join(again)
   expect(await ledger(again)).toEqual({ received: 1, sent: 2 })
 })
+
+test("push_durable refuses phx_reply, the event of a reply, and the channel rejoins", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("reserved"), {}, { durable: true })
+  const seen = updates(channel)
+  let errors = 0
+  channel.onError(() => errors++)
+  await join(channel)
+  channel.push("publish_event", { event: "phx_reply" })
+  await waitFor(() => errors === 1)
+  await waitFor(() => channel.state === "joined")
+  await answer(channel.push("publish", { body: "after" }))
+  await waitFor(() => seen.length === 1)
+  expect(seen).toEqual(["after"])
+})

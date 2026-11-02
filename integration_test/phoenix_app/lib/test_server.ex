@@ -436,6 +436,11 @@ defmodule TestServer.DurableChannel do
     {:reply, :ok, socket}
   end
 
+  def handle_in("publish_event", %{"event" => event}, socket) do
+    push_durable(socket, event, %{})
+    {:reply, :ok, socket}
+  end
+
   def handle_in("trim_nothing", _payload, socket) do
     trim = %S2.V1.AppendRecord{
       headers: [%S2.V1.Header{name: "", value: "trim"}],

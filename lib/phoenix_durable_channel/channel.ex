@@ -160,6 +160,9 @@ defmodule PhoenixDurableChannel.Channel do
     {:stop, {:shutdown, :replaced}, socket}
   end
 
+  def push_durable(_stream, _socket, "phx_reply", _payload),
+    do: raise(ArgumentError, "push_durable/3 can't push \"phx_reply\", the event of a reply")
+
   def push_durable(stream, socket, event, payload),
     do: push_durable(stream, socket, event, payload, socket.assigns[:phx_received])
 
