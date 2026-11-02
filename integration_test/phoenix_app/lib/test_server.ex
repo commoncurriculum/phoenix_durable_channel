@@ -222,9 +222,20 @@ defmodule TestServer.SlowMemory do
 
   @impl true
   def since(socket, number, limit) do
-    if TestServer.Joins.first_time?("slow_read:" <> socket.topic), do: Process.sleep(300)
+    if TestServer.Joins.increment("read:" <> socket.topic) == 1, do: Process.sleep(300)
     Memory.since(socket, number, limit)
   end
+end
+
+defmodule TestServer.Unreadable do
+  @behaviour PhoenixDurableChannel.Stream
+  alias PhoenixDurableChannel.Stream.Memory
+
+  @impl true
+  def append(socket, event, payload), do: Memory.append(socket, event, payload)
+
+  @impl true
+  def reader(socket), do: Memory.reader(socket)
 end
 
 defmodule TestServer.Elsewhere do
@@ -318,7 +329,8 @@ defmodule TestServer.DurableChannel do
   @streams Map.merge(@stores, %{
              "durable-streams-expiring" => TestServer.ExpiringDurableStreams,
              "elsewhere" => TestServer.Elsewhere,
-             "slow" => TestServer.SlowMemory
+             "slow" => TestServer.SlowMemory,
+             "unreadable" => TestServer.Unreadable
            })
 
   def durable_stream(socket), do: Map.get(@streams, socket.assigns[:stream], Memory)
@@ -326,6 +338,11 @@ defmodule TestServer.DurableChannel do
   def durable_ledger(socket), do: Map.get(@stores, socket.assigns[:ledger], Memory)
 
   @impl true
+  def join(topic, %{"refuse" => true}, _socket) do
+    TestServer.Joins.increment("refused:" <> topic)
+    {:error, %{reason: "refused"}}
+  end
+
   def join(_topic, params, socket) do
     if params["greet"], do: send(self(), :greet)
     if params["busy_after_join"], do: send(self(), :busy)
@@ -399,6 +416,15 @@ defmodule TestServer.DurableChannel do
 
     {:reply, {:ok, %{rows: length(rows)}}, socket}
   end
+
+  def handle_in("counts", %{"topic" => topic}, socket),
+    do:
+      {:reply,
+       {:ok,
+        %{
+          reads: TestServer.Joins.count("read:" <> topic),
+          refused: TestServer.Joins.count("refused:" <> topic)
+        }}, socket}
 
   def handle_in("handled", _payload, socket),
     do: {:reply, {:ok, %{handled: TestServer.Joins.count("handled:" <> socket.topic)}}, socket}

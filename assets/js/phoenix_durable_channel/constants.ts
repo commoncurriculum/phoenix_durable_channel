@@ -44,6 +44,7 @@ export const CHANNEL_EVENTS = {
   sync: "phx_sync",
   read: "phx_read",
   reader: "phx_reader",
+  skipped: "phx_skipped",
 } as const
 
 export const DURABLE_WINDOW = 32

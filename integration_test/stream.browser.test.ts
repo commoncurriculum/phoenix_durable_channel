@@ -101,22 +101,27 @@ test("without a number, a channel reads what the store gets after the join, howe
   expect(seen).toEqual(["after"])
 })
 
-test("a read that ends is read again, after a backoff, from the last message delivered", async () => {
+test("a read that ends is read again, after a backoff, from the last message delivered; an S2 command record is no message, and nothing is skipped", async () => {
+  const logs: Array<string> = []
   const topic = durableTopic("again")
-  const socket = openSocket("/socket", fast)
+  const socket = openSocket("/socket", { ...fast, logger: (_kind, message) => logs.push(message) })
   socket.connect()
   const channel = socket.channel(topic, { stream: "s2" }, { durable: true, after: 0 })
   const seen = updates(channel)
+  const skipped: Array<unknown> = []
+  channel.on("phx_skipped", (payload) => skipped.push(payload))
   await join(channel)
   await publish(channel, "one")
   await waitFor(() => seen.length === 1)
 
   await deleteS2Stream(topic)
   await pause(300)
-  await appendToS2(topic, ["one again", "two"])
+  await appendToS2(topic, ["one again", "the deletion's trim again", "two"])
   await waitFor(() => seen.length === 2)
   expect(seen).toEqual(["one", "two"])
   expect(channel.state).toBe("joined")
+  expect(skipped).toEqual([])
+  expect(logs.filter((line) => line.includes("skipped"))).toEqual([])
 })
 
 test("an app reads a store the client has no reader for with its own, and without one the channel says so", async () => {
@@ -139,11 +144,11 @@ test("an app reads a store the client has no reader for with its own, and withou
       durable: true,
       after: 0,
       readers: {
-        elsewhere: (latest) =>
+        elsewhere: (published) =>
           new S2Stream({
             endpoint: s2Url,
             basin,
-            stream: String(latest()["stream"]),
+            stream: String(published["stream"]),
           }),
       },
     },
@@ -153,6 +158,41 @@ test("an app reads a store the client has no reader for with its own, and withou
   await publish(channel, "one")
   await waitFor(() => seen.length === 1)
   expect(seen).toEqual(["one"])
+})
+
+test("a number a reader passes is no message, and the numbers it jumps over are skipped", async () => {
+  const topic = durableTopic("passed")
+  await appendToS2(topic, ["one", "two", "three", "four"])
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(
+    topic,
+    { stream: "elsewhere" },
+    {
+      durable: true,
+      after: 0,
+      readers: {
+        elsewhere: (published) => ({
+          read: (from, callbacks) => {
+            callbacks.passed(1)
+            callbacks.passed(3)
+            return new S2Stream({
+              endpoint: s2Url,
+              basin,
+              stream: String(published["stream"]),
+            }).read({ ...from, after: 3 }, callbacks)
+          },
+        }),
+      },
+    },
+  )
+  const seen = updates(channel)
+  const skipped: Array<unknown> = []
+  channel.on("phx_skipped", (payload) => skipped.push(payload))
+  await join(channel)
+  await waitFor(() => seen.length === 1)
+  expect(seen).toEqual(["four"])
+  expect(skipped).toEqual([{ after: 1, next: 3 }])
 })
 
 test("while the store cannot be reached, the channel keeps trying and stays joined", async () => {
@@ -251,7 +291,7 @@ function collect(stream: DurableStream, after: number, resume: Resume | null = n
     { after, epoch: "", resume },
     {
       deliver: (message) => delivered.push(message),
-      moved: () => {},
+      passed: () => {},
       reached: (position) => reached.push(position),
       failed: (error) => failures.push(error),
     },
@@ -268,7 +308,7 @@ test("a Durable Streams read after the last one, or after where the join said th
   const token = String(reader["token"])
   const stream = new DurableStream({
     url: String(reader["url"]),
-    token: () => token,
+    token,
   })
   await publish(channel, "one")
   await publish(channel, "two")
@@ -301,7 +341,7 @@ test("a Durable Streams read after the last one, or after where the join said th
   const fromTheJoin = collect(
     new DurableStream({
       url: String(reader["url"]),
-      token: () => token,
+      token,
       resume: { number: 3, offset: String(laterReader["offset"]) },
     }),
     3,
@@ -324,10 +364,10 @@ test("a channel whose Durable Streams read fails reads again from where the stor
       durable: true,
       after: 0,
       readers: {
-        "durable-streams": (latest, refresh) => ({
+        "durable-streams": (published, refresh) => ({
           read: (from, callbacks) => {
             reads.push(from)
-            return builtInReaders["durable-streams"]!(latest, refresh).read(from, {
+            return builtInReaders["durable-streams"]!(published, refresh).read(from, {
               ...callbacks,
               reached: (resume) => {
                 callbacks.reached(resume)
@@ -366,7 +406,7 @@ test("a Durable Streams read without a token is refused, and fails", async () =>
     { durable: true },
   )
   const reader = await joinedReader(channel)
-  const refused = collect(new DurableStream({ url: String(reader["url"]), token: () => null }), 0)
+  const refused = collect(new DurableStream({ url: String(reader["url"]), token: null }), 0)
   await waitFor(() => refused.failures.length === 1)
   expect(refused.failures).toEqual([401])
   expect(refused.delivered).toEqual([])

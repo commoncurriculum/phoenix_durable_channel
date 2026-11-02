@@ -18,5 +18,4 @@ export type {
   ReaderFactory,
   S2StreamOptions,
   StreamMessage,
-  Token,
 } from "./stream"

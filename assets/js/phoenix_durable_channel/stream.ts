@@ -1,13 +1,8 @@
 import { Effect, Stream as EffectStream, Fiber } from "effect"
-import type { EventFromLogic } from "xstate"
-import { ignore, startMachine } from "./actors"
-import { channelReadMachine } from "./machines/channel-read"
-import type { Push } from "./push"
 import {
   decodeDurableStreamsControl,
   decodeDurableStreamsData,
   decodeDurableStreamsReader,
-  decodeReadReply,
   decodeS2Batch,
   decodeS2Reader,
   decodeStreamBody,
@@ -36,12 +31,10 @@ export interface Position {
 
 export interface ReadCallbacks {
   deliver(message: StreamMessage): void
-  moved(epoch: string): void
+  passed(number: number): void
   reached(resume: Resume): void
   failed(error: unknown): void
 }
-
-export type Token = () => string | null | Promise<string | null>
 
 export interface PublishedReader {
   readonly type: string
@@ -51,29 +44,18 @@ export interface PublishedReader {
 }
 
 export type ReaderFactory = (
-  latest: () => PublishedReader,
+  published: PublishedReader,
   refresh: () => Promise<void>,
 ) => MessageStream
 
 export const builtInReaders: Record<string, ReaderFactory> = {
-  s2: (latest, refresh) => {
-    const { endpoint, basin, stream } = decodeS2Reader(latest())
-    return new S2Stream({
-      endpoint,
-      basin,
-      stream,
-      token: () => decodeS2Reader(latest()).token,
-      refused: refresh,
-    })
+  s2: (published, refresh) => {
+    const { endpoint, basin, stream, token } = decodeS2Reader(published)
+    return new S2Stream({ endpoint, basin, stream, token, refused: refresh })
   },
-  "durable-streams": (latest, refresh) => {
-    const { url, last, offset } = decodeDurableStreamsReader(latest())
-    return new DurableStream({
-      url,
-      token: () => decodeDurableStreamsReader(latest()).token,
-      refused: refresh,
-      resume: { number: last, offset },
-    })
+  "durable-streams": (published, refresh) => {
+    const { url, token, last, offset } = decodeDurableStreamsReader(published)
+    return new DurableStream({ url, token, refused: refresh, resume: { number: last, offset } })
   },
 }
 
@@ -81,13 +63,13 @@ export interface S2StreamOptions {
   endpoint: string
   basin: string
   stream: string
-  token?: Token
+  token?: string | null
   refused?: () => Promise<void>
 }
 
 export interface DurableStreamOptions {
   url: string
-  token?: Token
+  token?: string | null
   refused?: () => Promise<void>
   resume?: Resume
 }
@@ -97,7 +79,7 @@ const unchanged = (error: unknown) => error
 function readEvents(
   url: string,
   headers: Record<string, string>,
-  token: Token | undefined,
+  token: string | null,
   refused: (() => Promise<void>) | undefined,
   handle: (
     events: EffectStream.Stream<{ event: string; data: string }, unknown>,
@@ -105,9 +87,8 @@ function readEvents(
   failed: (error: unknown) => void,
 ): () => void {
   const read = Effect.gen(function* () {
-    const bearer = token === undefined ? null : yield* Effect.promise(async () => token())
     const authorization: Record<string, string> =
-      bearer === null ? {} : { authorization: `Bearer ${bearer}` }
+      token === null ? {} : { authorization: `Bearer ${token}` }
     const response = yield* Effect.tryPromise({
       try: (signal) =>
         fetch(url, {
@@ -156,14 +137,17 @@ export class S2Stream implements MessageStream {
     return readEvents(
       url,
       { "s2-basin": basin },
-      token,
+      token ?? null,
       refused,
       (events) =>
         EffectStream.runForEach(events, (event) => {
           if (event.event !== "batch") return Effect.void
           return Effect.sync(() => {
             for (const record of decodeS2Batch(event.data).records) {
-              if (record.headers[0]?.[0] === "") continue
+              if (record.headers[0]?.[0] === "") {
+                callbacks.passed(record.seq_num + 1)
+                continue
+              }
               const { event: name, payload } = decodeStreamBody(record.body)
               callbacks.deliver({
                 number: record.seq_num + 1,
@@ -189,7 +173,7 @@ export class DurableStream implements MessageStream {
     return readEvents(
       url,
       {},
-      this.options.token,
+      this.options.token ?? null,
       this.options.refused,
       (events) =>
         EffectStream.runFoldEffect(events, from.after, (last, event) =>
@@ -209,39 +193,5 @@ export class DurableStream implements MessageStream {
         ),
       callbacks.failed,
     )
-  }
-}
-
-export interface ChannelReads {
-  read(after: number): Push
-  listen(listener: (message: StreamMessage) => void): () => void
-}
-
-export class ChannelStream implements MessageStream {
-  constructor(private readonly channel: ChannelReads) {}
-
-  read(from: Position, callbacks: ReadCallbacks): () => void {
-    const actor = startMachine(channelReadMachine, { from }, ignore, (event) => {
-      switch (event.type) {
-        case "deliver":
-          return callbacks.deliver(event.message)
-        case "moved":
-          return callbacks.moved(event.epoch)
-        case "failed":
-          return callbacks.failed("ended")
-      }
-    })
-    const send = (event: EventFromLogic<typeof channelReadMachine>) => {
-      if (actor.getSnapshot().status === "active") actor.send(event)
-    }
-    const stopListening = this.channel.listen((message) => send({ type: "MESSAGE", message }))
-    this.channel
-      .read(from.after)
-      .receive("ok", (response) => send({ type: "READ_REPLY", ...decodeReadReply(response) }))
-      .receive("timeout", () => send({ type: "LOST" }))
-    return () => {
-      stopListening()
-      actor.stop()
-    }
   }
 }

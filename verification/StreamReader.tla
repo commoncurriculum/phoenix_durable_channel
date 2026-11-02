@@ -1,5 +1,5 @@
 ---------------------------- MODULE StreamReader ----------------------------
-EXTENDS Integers, Sequences
+EXTENDS Integers, Sequences, FiniteSets
 
 CONSTANTS MaxAppend, MaxFaults, Broken
 
@@ -12,9 +12,10 @@ VARIABLES
     floors,
     delivered,
     token,
+    forgotten,
     faults
 
-vars == <<appended, after, phase, last, reads, floors, delivered, token, faults>>
+vars == <<appended, after, phase, last, reads, floors, delivered, token, forgotten, faults>>
 
 Init ==
     /\ appended \in 0..1
@@ -25,46 +26,58 @@ Init ==
     /\ floors = <<after>>
     /\ delivered = <<>>
     /\ token = "good"
+    /\ forgotten = 0
     /\ faults = 0
 
 Current == Len(reads)
+Max(a, b) == IF a > b THEN a ELSE b
+Range(s) == {s[i] : i \in DOMAIN s}
 
 ServerAppends ==
     /\ appended < MaxAppend
     /\ appended' = appended + 1
-    /\ UNCHANGED <<after, phase, last, reads, floors, delivered, token, faults>>
+    /\ UNCHANGED <<after, phase, last, reads, floors, delivered, token, forgotten, faults>>
+
+StoreForgets ==
+    /\ faults < MaxFaults
+    /\ forgotten < appended
+    /\ faults' = faults + 1
+    /\ forgotten' = appended
+    /\ UNCHANGED <<appended, after, phase, last, reads, floors, delivered, token>>
 
 ReadDelivers(r) ==
     /\ \/ r = Current /\ phase = "reading"
        \/ Broken = "staleRead" /\ r < Current
-    /\ reads[r] < appended
-    /\ reads' = [reads EXCEPT ![r] = reads[r] + 1]
-    /\ IF reads[r] + 1 > floors[r] \/ Broken = "noSkip"
-       THEN /\ delivered' = Append(delivered, reads[r] + 1)
-            /\ last' = reads[r] + 1
-            /\ floors' = [floors EXCEPT ![r] = reads[r] + 1]
-       ELSE UNCHANGED <<delivered, last, floors>>
-    /\ UNCHANGED <<appended, after, phase, token, faults>>
+    /\ \E n \in {Max(reads[r], forgotten) + 1, Max(reads[r], forgotten) + 2} :
+        /\ n = Max(reads[r], forgotten) + 1 \/ Broken = "skipsKept"
+        /\ n <= appended
+        /\ reads' = [reads EXCEPT ![r] = n]
+        /\ IF n > floors[r] \/ Broken = "noSkip"
+           THEN /\ delivered' = Append(delivered, n)
+                /\ last' = n
+                /\ floors' = [floors EXCEPT ![r] = n]
+           ELSE UNCHANGED <<delivered, last, floors>>
+    /\ UNCHANGED <<appended, after, phase, token, forgotten, faults>>
 
 ReadEnds ==
     /\ faults < MaxFaults
     /\ phase = "reading"
     /\ faults' = faults + 1
     /\ phase' = IF Broken = "noRetry" THEN "stopped" ELSE "backingOff"
-    /\ UNCHANGED <<appended, after, last, reads, floors, delivered, token>>
+    /\ UNCHANGED <<appended, after, last, reads, floors, delivered, token, forgotten>>
 
 TokenExpires ==
     /\ faults < MaxFaults
     /\ token = "good"
     /\ faults' = faults + 1
     /\ token' = "expired"
-    /\ UNCHANGED <<appended, after, phase, last, reads, floors, delivered>>
+    /\ UNCHANGED <<appended, after, phase, last, reads, floors, delivered, forgotten>>
 
 ReadRefused ==
     /\ phase = "refused"
     /\ phase' = "backingOff"
     /\ token' = IF Broken = "noRefresh" THEN "expired" ELSE "good"
-    /\ UNCHANGED <<appended, after, last, reads, floors, delivered, faults>>
+    /\ UNCHANGED <<appended, after, last, reads, floors, delivered, forgotten, faults>>
 
 ReadsAgain ==
     /\ phase = "backingOff"
@@ -74,12 +87,12 @@ ReadsAgain ==
             /\ floors' = Append(floors, IF Broken = "fromStart" THEN after ELSE last)
        ELSE /\ phase' = "refused"
             /\ UNCHANGED <<reads, floors>>
-    /\ UNCHANGED <<appended, after, last, delivered, token, faults>>
+    /\ UNCHANGED <<appended, after, last, delivered, token, forgotten, faults>>
 
 Done == UNCHANGED vars
 
 Next ==
-    \/ ServerAppends
+    \/ ServerAppends \/ StoreForgets
     \/ \E r \in 1..Current : ReadDelivers(r)
     \/ ReadEnds \/ TokenExpires \/ ReadRefused \/ ReadsAgain
     \/ Done
@@ -90,8 +103,13 @@ Spec ==
 
 ---------------------------------------------------------------------------
 
-DeliveredInOrder == \A i \in DOMAIN delivered : delivered[i] = after + i
+InOrder ==
+    \A i \in DOMAIN delivered :
+        delivered[i] > IF i = 1 THEN after ELSE delivered[i - 1]
 
-CatchesUp == <>[](last = appended)
+GapsOnlyWhereForgotten ==
+    \A n \in (after + 1)..last : n \in Range(delivered) \/ n <= forgotten
+
+CatchesUp == <>[](Max(last, forgotten) = appended)
 
 ==============================================================================

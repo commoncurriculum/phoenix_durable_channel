@@ -406,7 +406,7 @@ describe.each(["memory", "mongo"])("reading from %s", (store) => {
 })
 
 describe("with the memory store, whose kept messages and replies the test app can drop", () => {
-  test("a gap is fetched, and what the server no longer has is skipped and logged", async () => {
+  test("a gap is fetched, and what the server no longer has is skipped, logged and told to the channel's phx_skipped", async () => {
     const logs: Array<string> = []
     const socket = openSocket("/socket", {
       ...fast,
@@ -416,6 +416,8 @@ describe("with the memory store, whose kept messages and replies the test app ca
     const name = durableTopic("gap")
     const channel = socket.channel(name, {}, { durable: true })
     const seen = updates(channel)
+    const skipped: Array<unknown> = []
+    channel.on("phx_skipped", (payload) => skipped.push(payload))
     await join(channel)
 
     await answer(channel.push("publish", { body: "1" }))
@@ -431,9 +433,22 @@ describe("with the memory store, whose kept messages and replies the test app ca
     await waitFor(() => seen.length === 5)
     expect(seen).toEqual(["1", "2", "3", "5", "6"])
     expect(logs).toContain(`${name} skipped durable messages 4 to 4, which the store no longer has`)
+    expect(skipped).toEqual([{ after: 3, next: 5 }])
     await answer(channel.push("publish", { body: "7" }))
     await waitFor(() => seen.length === 6)
     expect(seen).toEqual(["1", "2", "3", "5", "6", "7"])
+
+    await answer(channel.push("publish_silently", { body: "8" }))
+    await answer(channel.push("forget"))
+    channel.push("kill_transport")
+    await waitFor(() => skipped.length === 2)
+    expect(skipped).toEqual([
+      { after: 3, next: 5 },
+      { after: 7, next: 9 },
+    ])
+    await answer(channel.push("publish", { body: "9" }))
+    await waitFor(() => seen.length === 7)
+    expect(seen).toEqual(["1", "2", "3", "5", "6", "7", "9"])
   })
 
   test("a ledger reset while its channel lives keeps the channel's count; the next join starts both directions from the ledger's numbers", async () => {
@@ -570,6 +585,52 @@ test("a Memory ledger keeps what a joined channel received however long the chan
 
   await new Promise((resolve) => setTimeout(resolve, 3000))
   expect(await ledger(channel)).toMatchObject({ received: 1 })
+})
+
+test("a channel reads through itself only while joined: rejoins the server refuses ask for no read, and the join that succeeds asks for one", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const room = socket.channel(durableTopic("asks"))
+  await join(room)
+  const name = durableTopic("refused")
+  const counts = async () =>
+    (await answer(room.push("counts", { topic: name }))).response as {
+      reads: number
+      refused: number
+    }
+  let refuse = false
+  const channel = socket.channel(name, () => ({ stream: "slow", refuse }), { durable: true })
+  const seen = updates(channel)
+  await join(channel)
+  await expect.poll(async () => (await counts()).reads).toBe(1)
+
+  refuse = true
+  channel.push("kill_transport")
+  await expect.poll(async () => (await counts()).refused).toBeGreaterThanOrEqual(5)
+  expect((await counts()).reads).toBe(1)
+  refuse = false
+  await waitFor(() => channel.state === "joined")
+  await expect.poll(async () => (await counts()).reads).toBe(2)
+  await answer(channel.push("publish", { body: "after" }))
+  await waitFor(() => seen.length === 1)
+  expect(seen).toEqual(["after"])
+  expect((await counts()).reads).toBe(2)
+})
+
+test("an `after` that is not a whole number of 0 or more is refused when the channel is made; a read the server refuses is logged and asked again", async () => {
+  const logs: Array<string> = []
+  const socket = openSocket("/socket", { ...fast, logger: (_kind, message) => logs.push(message) })
+  socket.connect()
+  for (const after of [-1, 1.5, Number.NaN])
+    expect(() => socket.channel(durableTopic("after"), {}, { durable: true, after })).toThrow(
+      `after ${after}, which is not a whole number of 0 or more`,
+    )
+
+  const name = durableTopic("unreadable")
+  const channel = socket.channel(name, { stream: "unreadable" }, { durable: true })
+  await join(channel)
+  await waitFor(() => logs.filter((line) => line === `${name} could not read after 0`).length >= 2)
+  expect(channel.state).toBe("joined")
 })
 
 test("a durable request on a channel joined without durable messages, or a read the store does not serve, is invalid", async () => {

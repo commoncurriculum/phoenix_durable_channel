@@ -1,33 +1,40 @@
-import { assign, enqueueActions, fromCallback, setup } from "xstate"
+import { and, assign, enqueueActions, fromCallback, setup } from "xstate"
 import { backoff, ignore, type Data } from "../actors"
 import type { Position, PublishedReader, Resume, StreamMessage } from "../stream"
 
 export type ReaderEvent =
   | { type: "PUBLISHED"; reader: PublishedReader }
   | { type: "MESSAGE"; message: StreamMessage }
-  | { type: "MOVED"; epoch: string }
+  | { type: "PASSED"; number: number }
   | { type: "REACHED"; resume: Resume }
   | { type: "FAILED" }
+  | { type: "READ_REPLY"; read: number; sent: number; epoch: string }
+  | { type: "READ_REFUSED"; read: number }
   | { type: "CHANNEL_JOINED" }
   | { type: "CHANNEL_LEFT" }
   | { type: "STOP" }
 
 export type ReaderEmitted =
-  { type: "deliver"; message: StreamMessage } | { type: "skipped"; after: number; next: number }
+  | { type: "deliver"; message: StreamMessage }
+  | { type: "skipped"; after: number; next: number }
+  | { type: "read"; read: number; after: number }
 
 export type ReadingInput = { published: PublishedReader; from: Position }
 
 type ReaderContext = Data<{
+  after: number | null
   published: PublishedReader
   from: Position
   left: ReadonlyMap<string, number>
+  held: ReadonlyMap<number, StreamMessage>
+  reads: number
   tries: number
 }>
 
 export const readerMachine = setup({
   types: {
     context: {} as ReaderContext,
-    input: {} as { published: PublishedReader; after: number | null },
+    input: {} as { after: number | null },
     events: {} as ReaderEvent,
     emitted: {} as ReaderEmitted,
   },
@@ -38,31 +45,68 @@ export const readerMachine = setup({
   guards: {
     isNext: ({ context, event }) =>
       event.type === "MESSAGE" && event.message.number > context.from.after,
+    isNextInLine: ({ context, event }) =>
+      event.type === "MESSAGE" && event.message.number === context.from.after + 1,
+    isThisRead: ({ context, event }) =>
+      (event.type === "READ_REPLY" || event.type === "READ_REFUSED") &&
+      event.read === context.reads,
+    otherEpoch: ({ context, event }) =>
+      event.type === "READ_REPLY" && event.epoch !== context.from.epoch,
     readsThroughChannel: ({ context }) => context.published.type === "phoenix",
+  },
+  actions: {
+    take: enqueueActions(({ context, enqueue }, messages: ReadonlyArray<StreamMessage>) => {
+      let after = context.from.after
+      const unseen = messages.filter((message) => message.number > after)
+      for (const message of unseen.sort((a, b) => a.number - b.number)) {
+        if (message.number > after + 1)
+          enqueue.emit({ type: "skipped", after, next: message.number })
+        enqueue.emit({ type: "deliver", message })
+        after = message.number
+      }
+      enqueue.assign({ from: { ...context.from, after }, held: new Map(), tries: 0 })
+    }),
   },
 }).createMachine({
   id: "reader",
   context: ({ input }) => ({
-    published: input.published,
-    from: {
-      after: input.after ?? input.published.last,
-      epoch: input.published.epoch ?? "",
-      resume: null,
-    },
+    after: input.after,
+    published: { type: "unpublished", last: 0 },
+    from: { after: 0, epoch: "", resume: null },
     left: new Map(),
+    held: new Map(),
+    reads: 0,
     tries: 0,
   }),
-  initial: "joined",
+  initial: "unpublished",
   on: {
     PUBLISHED: { actions: assign({ published: ({ event }) => event.reader }) },
     STOP: ".stopped",
   },
   states: {
+    unpublished: {
+      on: {
+        PUBLISHED: {
+          target: "joined",
+          actions: assign(({ context, event }) => ({
+            published: event.reader,
+            from: {
+              after: context.after ?? event.reader.last,
+              epoch: event.reader.epoch ?? "",
+              resume: null,
+            },
+          })),
+        },
+      },
+    },
     joined: {
       initial: "reading",
       on: { CHANNEL_LEFT: { guard: "readsThroughChannel", target: "away" } },
       states: {
         reading: {
+          always: [{ guard: "readsThroughChannel", target: "holding" }, { target: "streaming" }],
+        },
+        streaming: {
           invoke: {
             src: "reading",
             input: ({ context }) => ({ published: context.published, from: context.from }),
@@ -70,17 +114,14 @@ export const readerMachine = setup({
           on: {
             MESSAGE: {
               guard: "isNext",
+              actions: { type: "take", params: ({ event }) => [event.message] },
+            },
+            PASSED: {
               actions: enqueueActions(({ context, event, enqueue }) => {
-                if (event.message.number > context.from.after + 1)
-                  enqueue.emit({
-                    type: "skipped",
-                    after: context.from.after,
-                    next: event.message.number,
-                  })
-                enqueue.emit({ type: "deliver", message: event.message })
+                if (event.number > context.from.after + 1)
+                  enqueue.emit({ type: "skipped", after: context.from.after, next: event.number })
                 enqueue.assign({
-                  from: { ...context.from, after: event.message.number },
-                  tries: 0,
+                  from: { ...context.from, after: Math.max(context.from.after, event.number) },
                 })
               }),
             },
@@ -89,17 +130,63 @@ export const readerMachine = setup({
                 from: ({ context, event }) => ({ ...context.from, resume: event.resume }),
               }),
             },
-            MOVED: {
-              actions: assign(({ context, event }) => ({
-                left: new Map(context.left).set(context.from.epoch, context.from.after),
-                from: {
-                  after: context.left.get(event.epoch) ?? 0,
-                  epoch: event.epoch,
-                  resume: null,
-                },
-              })),
-            },
             FAILED: "backingOff",
+          },
+        },
+        holding: {
+          entry: enqueueActions(({ context, enqueue }) => {
+            enqueue.assign({ reads: context.reads + 1, held: new Map() })
+            enqueue.emit({ type: "read", read: context.reads + 1, after: context.from.after })
+          }),
+          on: {
+            MESSAGE: {
+              actions: assign({
+                held: ({ context, event }) =>
+                  new Map(context.held).set(event.message.number, event.message),
+              }),
+            },
+            READ_REPLY: [
+              {
+                guard: and(["isThisRead", "otherEpoch"]),
+                target: "backingOff",
+                actions: assign(({ context, event }) => ({
+                  left: new Map(context.left).set(context.from.epoch, context.from.after),
+                  from: {
+                    after: context.left.get(event.epoch) ?? 0,
+                    epoch: event.epoch,
+                    resume: null,
+                  },
+                })),
+              },
+              {
+                guard: "isThisRead",
+                target: "live",
+                actions: [
+                  { type: "take", params: ({ context }) => [...context.held.values()] },
+                  enqueueActions(({ context, event, enqueue }) => {
+                    if (event.sent <= context.from.after) return
+                    enqueue.emit({
+                      type: "skipped",
+                      after: context.from.after,
+                      next: event.sent + 1,
+                    })
+                    enqueue.assign({ from: { ...context.from, after: event.sent } })
+                  }),
+                ],
+              },
+            ],
+            READ_REFUSED: { guard: "isThisRead", target: "backingOff" },
+          },
+        },
+        live: {
+          on: {
+            MESSAGE: [
+              {
+                guard: "isNextInLine",
+                actions: { type: "take", params: ({ event }) => [event.message] },
+              },
+              { target: "backingOff" },
+            ],
           },
         },
         backingOff: {

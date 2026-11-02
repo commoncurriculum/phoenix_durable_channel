@@ -96,7 +96,7 @@ Drops ==
 ---------------------------------------------------------------------------
 
 StartsRead ==
-    /\ at # 0
+    /\ at # 0 \/ Broken = "readWhileAway"
     /\ started
     /\ read = "idle"
     /\ toServer = <<>>
@@ -156,7 +156,8 @@ ReplyArrives ==
             [] current ->
                   /\ delivered' = delivered \o [i \in 1..Cardinality(held) |->
                                                   [e |-> m.epoch, n |-> Sorted(held)[i]]]
-                  /\ from' = IF held = {} THEN from ELSE [from EXCEPT !.after = MaxOf(held)]
+                  /\ from' = [from EXCEPT !.after =
+                                 Max(IF held = {} THEN from.after ELSE MaxOf(held), m.sent)]
                   /\ held' = {}
                   /\ next' = m.sent + 1
                   /\ read' = "live"
@@ -266,6 +267,8 @@ NothingLostButForgotten ==
             \/ [e |-> e, n |-> n] \in Range(delivered)
             \/ n <= forgotten[e]
             \/ (e = startAt.e /\ n <= startAt.after)
+
+ReadOnlyWhileJoined == read # "idle" => at # 0
 
 CatchesUp == <>[](at # 0 /\ read = "live" /\ from.e = Here /\ next = sent[Here] + 1)
 

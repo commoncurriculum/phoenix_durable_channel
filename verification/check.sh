@@ -91,6 +91,7 @@ noEpochCheck NothingLostButForgotten INVARIANT
 fromStartOnReturn DeliveredOnceInOrder INVARIANT
 replyOnFirstPage CatchesUp PROPERTY
 readTimeout CatchesUp PROPERTY
+readWhileAway ReadOnlyWhileJoined INVARIANT
 EOF
 
 check SocketBuffer "  MaxPush = 3
@@ -104,9 +105,10 @@ EOF
 
 check StreamReader "  MaxAppend = 3
   MaxFaults = 2" <<'EOF'
-staleRead DeliveredInOrder INVARIANT
-fromStart DeliveredInOrder INVARIANT
-noSkip DeliveredInOrder INVARIANT
+staleRead InOrder INVARIANT
+fromStart InOrder INVARIANT
+noSkip InOrder INVARIANT
+skipsKept GapsOnlyWhereForgotten INVARIANT
 noRetry CatchesUp PROPERTY
 noRefresh CatchesUp PROPERTY
 EOF
