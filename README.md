@@ -80,7 +80,7 @@ A durable message carries its number in a sixth slot of Phoenix's V2 JSON frame,
 
 ### 2b. Pick a store, configure it and start it
 
-The store keeps two things: the **ledger** (the last durable message handled from the client, and its replies, so a resend gets the same reply) and the **stream** (the server's durable messages, so the client can read what it missed). Every store the library ships is both.
+The store keeps one list per topic, the **stream**: the server's durable messages and the answers to the client's durable pushes, in one numbering, so the client reads what it missed of both the same way. Every message also carries how many of the client's pushes the server had handled when it was appended, so the last message says where the client's pushes got to.
 
 | Store                                         | Add to `deps`                                                                               | Start in your supervision tree                 | The client reads the server's messages              |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------- |
@@ -94,8 +94,7 @@ With MongoDB, in `config/runtime.exs`:
 ```elixir
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.Mongo,
   name: MyApp.Mongo,
-  messages: "durable_messages",
-  replies: "durable_replies"
+  messages: "durable_messages"
 ```
 
 and in `lib/my_app/application.ex`:
@@ -145,11 +144,11 @@ and in `lib/my_app/application.ex`:
 children = [PhoenixDurableChannel.Stream.DurableStreams, MyAppWeb.Endpoint]
 ```
 
-Each node keeps where it read each topic's streams to, and where its recent replies are, while a channel has the topic and for `keep_offsets_for` (five minutes by default, `{PhoenixDurableChannel.Stream.DurableStreams, keep_offsets_for: :timer.minutes(5)}`) after the topic's last channel leaves. So a reconnect to the same node does not read the streams again from the start, and a push sent again is looked up from the start of the page before its reply, on any node, after one read of the replies: a node keeps the 64 newest reply offsets it learned, one per page it read and one per reply it wrote. Forgetting drops only this cache, never the ledger.
+Each node keeps where it read each topic's stream to, with its last number and handled count, while a channel has the topic and for `keep_offsets_for` (five minutes by default, `{PhoenixDurableChannel.Stream.DurableStreams, keep_offsets_for: :timer.minutes(5)}`) after the topic's last channel leaves. So a reconnect to the same node does not read the stream again from the start. Forgetting drops only this cache, never the stream.
 
 ### 2c. The channel: one `use` line
 
-A durable channel's topic names **one client**, such as one page load: the ledger counts that client's messages, and a durable join makes its process the topic's only one. So the room's messages reach each client on the client's own topic. In `lib/my_app_web/user_socket.ex`:
+A durable channel's topic names **one client**, such as one page load: the stream counts that client's pushes, and a durable join makes its process the topic's only one. So the room's messages reach each client on the client's own topic. In `lib/my_app_web/user_socket.ex`:
 
 ```elixir
 channel "client:*", MyAppWeb.ClientChannel
@@ -160,9 +159,7 @@ and in `lib/my_app_web/channels/client_channel.ex`:
 ```elixir
 defmodule MyAppWeb.ClientChannel do
   use Phoenix.Channel
-  use PhoenixDurableChannel.Channel,
-    ledger: PhoenixDurableChannel.Stream.Mongo,
-    stream: PhoenixDurableChannel.Stream.Mongo
+  use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Mongo
 
   def join("client:" <> _id, %{"room" => room}, socket) do
     MyAppWeb.Endpoint.subscribe("room:" <> room)
@@ -190,13 +187,13 @@ defmodule MyAppWeb.ClientChannel do
 end
 ```
 
-- `handle_in("new_msg", ...)` is the client's durable push. It runs once and in order; its reply is recorded, and a resend after a lost reply gets this same reply. `{:retry, :database_down, socket}` makes the client send it again, in order, after a backoff.
+- `handle_in("new_msg", ...)` is the client's durable push. It runs once and in order, and its reply goes to the topic's stream, so the client gets it however often the connection drops. `{:retry, :database_down, socket}` makes the client send it again, in order, after a backoff.
 - `handle_info` makes the room's messages durable to this client: numbered, kept, and read again after a drop.
 - `use PhoenixDurableChannel.Channel` comes after `use Phoenix.Channel`. It wraps your `join/3`, `handle_in/3` and `handle_info/2`; your functions stay as they are.
 - `push/3` stays fire and forget. `push_durable/3` is the durable one.
-- `handle_in/3` sees a durable message's plain payload, and `socket.assigns.phx_number` is its number. It answers with what Phoenix allows (`{:reply, reply, socket}`, `{:noreply, socket}` and `{:noreply, socket, timeout | :hibernate}` meaning `:ok`, `{:stop, reason, reply, socket}`, `{:stop, reason, socket}` meaning `:ok`), or `{:retry, reason, socket}` for a message it can't take now. A stop's reply is recorded before the process stops. A handler that raises answers `{:error, %{reason: "crashed"}}` and is not run again.
-- **A handler must be safe to run twice.** A message runs once unless its process dies between running it and the ledger's record; then the client's resend runs it again.
-- `ledger:` and `stream:` are read on every call, so they can come from runtime config. Define `durable_ledger/1` or `durable_stream/1` to pick per socket.
+- `handle_in/3` sees a durable message's plain payload, and `socket.assigns.phx_number` is its number. It answers with what Phoenix allows (`{:reply, reply, socket}`, `{:noreply, socket}` and `{:noreply, socket, timeout | :hibernate}` meaning `:ok`, `{:stop, reason, reply, socket}`, `{:stop, reason, socket}` meaning `:ok`), or `{:retry, reason, socket}` for a message it can't take now. A stop's reply goes to the stream before the process stops. A handler that raises answers `{:error, %{reason: "crashed"}}` and is not run again.
+- **A handler must be safe to run twice.** A message runs once unless its process dies between running it and appending its reply; then the client's resend runs it again.
+- `stream:` is read on every call, so it can come from runtime config. Define `durable_stream/1` to pick per socket.
 - Only what was appended is kept. Above, a broadcast while no process of the client's channel is subscribed (the client is offline) is not appended, so the client reloads the room after a rejoin, as it would today.
 
 ### 2d. The client: open the channel durable
@@ -225,6 +222,7 @@ A durable push is answered `"timeout"` only when its channel is closed (`channel
 - **A new page that reaches an old pod waits.** An old pod answers its durable join without `phx_durable: true`; the client treats that join as not joined, keeps its durable pushes, and joins again after a backoff until a pod with this library answers.
 - **Upgrading from a version of this library that answered the durable join with `phx_reader` is a breaking change.** This version answers `phx_durable: true` and pushes `phx_reader` after the join. A page loaded before the deploy treats the new reply as not joined and joins again until it is reloaded, its durable pushes waiting. Deploy it when pages can be reloaded, or reload them.
 - **Upgrading from a version of this library whose durable pushes carried no epoch is a breaking change.** A page loaded before the deploy can't decode a push with an epoch, so it gets none of its durable messages from a new pod; a new page reading through the channel from a pod still on that version delivers none of them either, firing `phx_skipped` and logging that the store no longer has them. The old page's client throws a `ParseError` for each push it can't decode. Deploy the server and the client together when pages can be reloaded, or reload them.
+- **Upgrading from a version of this library with a `ledger:` is a breaking change.** Replies are messages in the stream now, and the count of handled pushes is read from the stream's last message, which that version did not write: the first join after the deploy counts from 0, so a page loaded before the deploy has its pushes run again, and gets no answers. Drop `ledger:` from `use PhoenixDurableChannel.Channel`, then the Mongo `replies` collection and the S2 and Durable Streams `<topic>/replies` streams, which nothing reads. Deploy when pages can be reloaded, or reload them.
 
 ## Differences from phoenix.js 1.7
 
@@ -246,15 +244,18 @@ New channel options, the third argument of `socket.channel`: `durable`, `after` 
 
 On the wire, a durable message's number is a sixth element of the V2 frame, `[join_ref, ref, topic, event, payload, number]`, and one the server pushes adds its epoch as a seventh. A client opened with `durable` joins with `phx_durable: true`. The server channel assigns `phx_durable` and adds `phx_durable: true` to the join reply, so the client knows the server speaks durable messages. On a channel joined without it, `phx_sync`, `phx_read`, `phx_reader` and any numbered frame are answered `{:error, %{reason: "invalid"}}`, as is a `phx_read` with an `after` that is not a number of 0 or more, or on a stream that is not read through the channel.
 
-The two directions are separate.
+Both directions are one list: the topic's stream.
 
 **The client's durable pushes:**
 
-- After every join the client sends `phx_sync`, and the server replies `{received}`, the last number its ledger recorded.
-- The server reads `received` from the ledger once, at the join, and counts on from it in the channel's assigns, with the last 32 replies: the join makes its process the only one taking the client's pushes. A ledger reset while the process runs changes nothing until the next join, which reads the ledger again.
-- The client numbers its pushes on from there, sends them in order, and sends them again after every rejoin until answered. The server answers one it already handled with the reply its process or its ledger kept, and one whose reply neither kept with `{:error, %{reason: "reply_lost"}}`.
+- After every join the client sends `phx_sync`, and the server replies `{received}`: how many of the client's pushes it has handled, from the stream's last message.
+- The server reads `received` once, at the join, and counts on from it in the channel's assigns: the join makes its process the only one taking the client's pushes. A stream reset while the process runs changes nothing until the next join, which reads it again.
+- The client numbers its pushes on from there and sends them in order. The server runs push n and appends its answer, a `phx_reply` message `{number, status, response}`, with `received` n in the same append, so the count and the answer are written together, as Kafka Streams commits its input offset with its output. The client reads the answer like any other durable message.
+- After a rejoin the client keeps waiting on the pushes at or below `received`, whose answers are in the stream, and numbers the rest on from `received` + 1 and sends them again. A push numbered at or below the count is not run again.
+- Answers are appended in the order the pushes were numbered, so reading the answer to n means every earlier push still waiting lost its answer, when the store forgot it: those are answered `{:error, %{reason: "reply_lost"}}`. A push whose answer was forgotten waits until a later answer is read, or its channel closes.
+- A stop's answer is also sent to the client as a plain reply, since a read from the store's own protocol stops with the channel. The client takes whichever arrives first.
 - A push the server can't take now (`{:retry, reason, socket}`) is sent again, with the ones after it, after a backoff.
-- At most 32 are unanswered at once, and the ledger keeps the last 32 replies or more, so a resend finds its reply unless the ledger lost what it kept.
+- On `S2` and `DurableStreams` an answer comes through the store's own read, so it waits for the store's append and the client's read, and a page with more reads open to one HTTP/1.1 host than the browser allows at once (six in Chrome) gets no answers on the rest. Serve the store over HTTP/2.
 - A durable join replaces the topic's process from an earlier connection, after that process has run what it had already received, so two processes never run the client's pushes at once. The replaced process sends its client `phx_error`, so a client still on that join rejoins and sends again what crossed it (Phoenix answers those "unmatched topic"): the join that replaced it can be a late one from a connection the client already gave up on.
 - Two clients joined on one topic at once would take it from each other in turn. A reload is a new client, numbering from 1.
 
@@ -267,17 +268,14 @@ The two directions are separate.
 
 ## Stores
 
-Two behaviours, and each store implements both:
+One behaviour, `PhoenixDurableChannel.Stream`: `append/4` numbers and keeps a message with the count of the client's pushes handled; `received/1` reads that count from the last message; `reader/1` is how the client reads them, pushed after the join as `phx_reader`, so the client needs no configuration of its own.
 
-- `PhoenixDurableChannel.Ledger`: `received/1`, the last number handled from the client; `put_received/3` and `reply/2`, the replies.
-- `PhoenixDurableChannel.Stream`: `append/3` numbers and keeps a message; `reader/1` is how the client reads them, pushed after the join as `phx_reader`, so the client needs no configuration of its own.
-
-| Store            | Where                                                                                     | `phx_reader`                                          |
-| ---------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `Mongo`          | documents in two collections, unique on `{topic, number}`                                 | `{type: "phoenix", last, epoch}`                      |
-| `S2`             | an S2 stream per topic; replies in `<topic>/replies`, which the client's token can't read | `{type: "s2", endpoint, basin, stream, token, last}`  |
-| `DurableStreams` | a Durable Streams stream per topic; replies in `<topic>/replies`                          | `{type: "durable-streams", url, token, last, offset}` |
-| `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart                  | `{type: "phoenix", last, epoch}`                      |
+| Store            | Where                                                                    | `phx_reader`                                          |
+| ---------------- | ------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `Mongo`          | documents in one collection, unique on `{topic, number}`                 | `{type: "phoenix", last, epoch}`                      |
+| `S2`             | an S2 stream per topic                                                   | `{type: "s2", endpoint, basin, stream, token, last}`  |
+| `DurableStreams` | a Durable Streams stream per topic                                       | `{type: "durable-streams", url, token, last, offset}` |
+| `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart | `{type: "phoenix", last, epoch}`                      |
 
 A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3` and `epoch/1`) is read through the channel. Any other is read from the store's own protocol.
 
@@ -293,7 +291,7 @@ A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3
 - Each topic is one stream of the same name, and each token reads only that stream. A store that refuses the token (401 or 403) makes the client ask the channel for a fresh reader (`phx_reader`) and read again.
 - S2 record `seq_num` n is message n + 1. A command record, such as the trim S2 appends when a stream is deleted, takes a number but is no message: the client passes it.
 - Durable Streams offsets are opaque, so each message carries its number, `phx_reader` gives the offset where `last` ends, a read that fails starts again at the offset where it last got to, and the server numbers on from the stream's last with `Stream-Seq`, which the store refuses to repeat, so two nodes never write the same number.
-- A stream that is deleted and made again, or trimmed past where a client got to, is not noticed: delete a topic's stream only when no client will read it again.
+- A stream that is deleted and made again, or trimmed past where a client got to, is not noticed, and a deleted one counts the client's pushes from 0 again, so pushes it already ran run again: delete a topic's stream only when no client will read it again.
 
 **Another kind of store** needs a reader on the client, by `type`, that returns a `MessageStream`:
 
@@ -339,7 +337,7 @@ Faults: partitions between nodes, `kill -9`, `SIGSTOP`, and cutting a node off f
 - it was delivered exactly its stream: every message once, in order, none missing;
 - no push was answered with an error.
 
-A push may be in the stream twice in a row, when its channel process died between running it and the ledger's record; the checker counts these as `:reruns`. Results are in `jepsen/store`. It needs Docker, and Leiningen from `jepsen/mise.toml`.
+A push may be in the stream twice in a row, when its channel process died between running it and appending its answer; the checker counts these as `:reruns`. Results are in `jepsen/store`. It needs Docker, and Leiningen from `jepsen/mise.toml`.
 
 ## Formal verification
 
