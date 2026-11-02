@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { fromCallback, type Actor } from "xstate"
 import { backoff, ignore, startMachine } from "./actors"
 import type { ChannelExtension, ChannelSocket, Trigger } from "./channel"
@@ -108,13 +108,18 @@ export class Durable implements ChannelExtension {
       ignore,
       (event) => {
         switch (event.type) {
-          case "deliver":
-            if (event.message.event === CHANNEL_EVENTS.reply)
-              return this.log.actor.send({
-                type: "ANSWERED",
-                ...decodeDurableReply(event.message.payload),
-              })
-            return trigger(event.message.event, event.message.payload)
+          case "deliver": {
+            if (event.message.event !== CHANNEL_EVENTS.reply)
+              return trigger(event.message.event, event.message.payload)
+            const answered = decodeDurableReply(event.message.payload)
+            if (Option.isSome(answered))
+              return this.log.actor.send({ type: "ANSWERED", ...answered.value })
+            return socket.log(
+              "channel",
+              `${channel.topic} passed a phx_reply that is not an answer`,
+              event.message.payload,
+            )
+          }
           case "readTo":
             return this.log.actor.send({ type: "READ", after: event.after })
           case "skipped":

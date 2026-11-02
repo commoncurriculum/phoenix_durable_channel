@@ -441,6 +441,12 @@ defmodule TestServer.DurableChannel do
     {:reply, :ok, socket}
   end
 
+  def handle_in("append_unpushed", %{"event" => event, "payload" => payload}, socket) do
+    durable_stream(socket).append(socket, event, payload, socket.assigns.phx_received)
+    push_durable(socket, "update", %{body: "after"})
+    {:reply, :ok, socket}
+  end
+
   def handle_in("publish_large", _payload, socket) do
     push_durable(socket, "large", %{body: String.duplicate("x", 600_000)})
     {:reply, :ok, socket}

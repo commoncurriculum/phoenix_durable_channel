@@ -902,3 +902,27 @@ test("push_durable refuses phx_reply, the event of a reply, and the channel rejo
   await waitFor(() => seen.length === 1)
   expect(seen).toEqual(["after"])
 })
+
+test("a phx_reply in the stream that is not an answer is logged and passed, and the read goes on", async () => {
+  const logged: unknown[][] = []
+  const socket = openSocket("/socket", {
+    ...fast,
+    logger: (...entry: unknown[]) => logged.push(entry),
+  })
+  socket.connect()
+  const channel = socket.channel(durableTopic("malformed-reply"), {}, { durable: true })
+  const seen = updates(channel)
+  await join(channel)
+  await answer(channel.push("append_unpushed", { event: "phx_reply", payload: { body: "app" } }))
+  await waitFor(() => seen.length === 1)
+  expect(seen).toEqual(["after"])
+  expect(logged).toContainEqual([
+    "channel",
+    `${channel.topic} passed a phx_reply that is not an answer`,
+    { body: "app" },
+  ])
+  expect(await answer(channel.push("action", { body: "later" }, { durable: true }))).toEqual({
+    status: "ok",
+    response: { body: "later" },
+  })
+})

@@ -20,7 +20,7 @@ export const decodeReply = Schema.decodeUnknownSync(
   Schema.Struct({ status: Schema.String, response: Schema.Unknown }),
 )
 
-export const decodeDurableReply = Schema.decodeUnknownSync(
+export const decodeDurableReply = Schema.decodeUnknownOption(
   Schema.Struct({ number: Schema.Number, status: Schema.String, response: Schema.Unknown }),
 )
 

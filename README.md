@@ -254,6 +254,7 @@ Both directions are one list: the topic's stream.
 - After a rejoin the client keeps waiting on the pushes at or below `received`, whose answers are in the stream, and numbers the rest on from `received` + 1 and sends them again. A push numbered at or below the count is not run again.
 - Every answer counted in `received` is at or before the sync reply's `last`. Once the client has read to that `last`, a push at or below `received` still waiting lost its answer, when the store forgot it: it is answered `{:error, %{reason: "reply_lost"}}`.
 - A read that skips messages the store no longer has makes the client sync again, so an answer skipped while joined is answered `reply_lost` the same way.
+- `phx_reply` is the event of an answer: `push_durable/3` raises `ArgumentError` for it, and a `phx_reply` in the stream that is not an answer is logged through the socket's `logger` and passed.
 - A push is answered only as far as the client reads: on a type the client has no reader for, or while its reader backs off, it waits until its channel closes.
 - A stop's answer is also sent to the client as a plain reply, since a read from the store's own protocol stops with the channel. The client takes whichever arrives first.
 - A push the server can't take now (`{:retry, reason, socket}`) is sent again, with the ones after it, after a backoff.
