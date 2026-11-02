@@ -259,7 +259,7 @@ The two directions are separate.
 
 - They go to the stream. Right after a durable join, once the topic's earlier process is gone, the server pushes `phx_reader`: where to read them, and `last`, the stream's last number then. A client with no `after` starts after `last`, so nothing durable after its join is missed however late its read opens.
 - A read through the channel pauses while the channel is not joined and starts again after the rejoin, so a read never waits in the socket's buffer. A read from the store's own protocol goes on regardless.
-- A message the store no longer has is skipped: the client delivers the next one it has, logs `<topic> skipped durable messages <from> to <to>, which the store no longer has` through the socket's `logger`, and triggers `phx_skipped` on the channel with `{after, next}`, the last number it delivered and the next it has, so `channel.on("phx_skipped", ...)` can reload what the app shows.
+- A message the store no longer has is skipped: the client delivers the next one it has, logs `<topic> skipped durable messages <from> to <to>, which the store no longer has` through the socket's `logger`, and triggers `phx_skipped` on the channel with `{after, next}`: the numbers after `after` and before `next` are gone, and `next` may not exist yet, so `channel.on("phx_skipped", ...)` can reload what the app shows.
 - A durable channel's join answered `ok` without `phx_durable: true`, as a server without this library answers, is not joined: its pushes wait, the client leaves that join and joins again after a backoff.
 
 ## Stores
@@ -301,7 +301,7 @@ socket.channel(topic, params, {
 })
 ```
 
-`published` is the last `phx_reader` when the read starts. `refresh()` asks the channel for a fresh reader: fail the read after it (`callbacks.failed`), and the channel reads again with the new one. `callbacks.passed(number)` tells the client a number is no message, as an S2 command record is. A `MessageStream` may deliver a message again: the client drops any at or before the last one it delivered. A type the client has no reader for is logged to the console, and its messages are not read.
+`published` is the last `phx_reader` when the read starts. `refresh(signal)` asks the channel for a fresh reader, and rejects when the server will not give one or the signal aborts: fail the read after it either way (`callbacks.failed`), and the channel reads again. `callbacks.passed(number)` tells the client a number is no message, as an S2 command record is. A `MessageStream` may deliver a message again: the client drops any at or before the last one it delivered. A type the client has no reader for is logged to the console, and its messages are not read.
 
 ## Tests
 
