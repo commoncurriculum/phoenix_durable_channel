@@ -159,7 +159,7 @@ export class Channel {
       left.answer("ok", {})
       return left
     }
-    if (this.state !== "leaving") this.actor.send({ type: "LEAVE", timeout })
+    this.actor.send({ type: "LEAVE", timeout })
     return this.leavePush
   }
 
