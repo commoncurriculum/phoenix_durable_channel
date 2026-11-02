@@ -144,6 +144,9 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     %{messages: messages, sent: sent, latest: kept.latest, epoch: kept.epoch}
   end
 
+  @impl PhoenixDurableChannel.Stream.ThroughChannel
+  def epoch(socket), do: kept(socket.topic).epoch
+
   @impl PhoenixDurableChannel.Stream
   def reader(socket) do
     :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})

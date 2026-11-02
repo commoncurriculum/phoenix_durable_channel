@@ -265,6 +265,9 @@ defmodule TestServer.SlowMemory do
   def reader(socket), do: Memory.reader(socket)
 
   @impl true
+  def epoch(socket), do: Memory.epoch(socket)
+
+  @impl true
   def since(socket, number, limit) do
     if TestServer.Joins.increment("read:" <> socket.topic) == 1, do: Process.sleep(300)
     Memory.since(socket, number, limit)

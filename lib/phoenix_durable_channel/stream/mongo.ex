@@ -63,6 +63,9 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
     %{messages: messages, sent: sent, latest: latest, epoch: @epoch}
   end
 
+  @impl PhoenixDurableChannel.Stream.ThroughChannel
+  def epoch(_socket), do: @epoch
+
   @impl PhoenixDurableChannel.Stream
   def reader(socket),
     do: %{type: "phoenix", last: last(config()[:messages], socket.topic), epoch: @epoch}

@@ -12,4 +12,6 @@ defmodule PhoenixDurableChannel.Stream.ThroughChannel do
               limit :: pos_integer()
             ) ::
               page()
+
+  @callback epoch(socket :: Phoenix.Socket.t()) :: String.t()
 end
