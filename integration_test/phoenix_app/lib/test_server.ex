@@ -73,17 +73,22 @@ defmodule TestServer.Endpoint do
   plug(:durable_streams)
   plug(:health)
 
-  def durable_streams(%{path_info: ["durable-streams" | path]} = connection, _options) do
-    connection = Plug.Conn.fetch_query_params(connection)
+  def durable_streams(%{path_info: ["durable-streams" | _path]} = connection, _options),
+    do:
+      connection
+      |> Plug.Conn.fetch_query_params()
+      |> Plug.Conn.read_body(length: :infinity)
+      |> forward_to_durable_streams()
 
+  def durable_streams(connection, _options), do: connection
+
+  def forward_to_durable_streams({:ok, body, %{path_info: [_ | path]} = connection}) do
     if connection.method == "GET",
       do:
         TestServer.Joins.increment(
           "durable_streams_read:" <>
             URI.decode_www_form(List.last(path)) <> "@" <> connection.query_params["offset"]
         )
-
-    body = connection |> Plug.Conn.read_body() |> elem(1)
 
     response =
       Req.request!(
@@ -108,8 +113,6 @@ defmodule TestServer.Endpoint do
     |> Plug.Conn.send_resp(response.status, response.body)
     |> Plug.Conn.halt()
   end
-
-  def durable_streams(connection, _options), do: connection
 
   def health(%{request_path: "/hang/websocket"}, _options), do: Process.sleep(:infinity)
 

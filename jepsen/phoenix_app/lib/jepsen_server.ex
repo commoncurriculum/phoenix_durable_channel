@@ -52,7 +52,8 @@ defmodule JepsenServer.Endpoint do
 
   plug(:health)
 
-  def health(conn, _options), do: conn |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
+  def health(connection, _options),
+    do: connection |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
 end
 
 defmodule JepsenServer.UserSocket do
