@@ -63,15 +63,13 @@ leaveOnlyWhenOpen ServerForgetsClosedChannel INVARIANT
 EOF
 
 check DurableMessages "  MaxPush = 4
-  MaxFaults = 2
-  Window = 2
-  Kept = 2" <<'EOF'
+  MaxFaults = 2" <<'EOF'
 noReplace HandledOnceUnlessCrashed INVARIANT
-noDedupe HandledOnceUnlessCrashed INVARIANT
-noWindow RepliesKept INVARIANT
 countBeforeRecord CountIsRecorded INVARIANT
 noResend CatchesUp PROPERTY
-historicIsOk AnsweredAsHandled INVARIANT
+renumberHandled HandledOnceUnlessCrashed INVARIANT
+keepAnswered AnsweredOnce INVARIANT
+loseAnyOther LostOnlyAfterReset INVARIANT
 retryIsAnswer OnlyTakenAreAnswered INVARIANT
 unmatchedIsAnswer OnlyTakenAreAnswered INVARIANT
 staleCount HandledOnceUnlessCrashed INVARIANT
