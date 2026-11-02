@@ -65,7 +65,7 @@ defmodule PhoenixDurableChannel.Channel do
           )
 
       def handle_in("phx_sync", _payload, %{assigns: %{phx_durable: true}} = socket),
-        do: PhoenixDurableChannel.Channel.sync(socket)
+        do: PhoenixDurableChannel.Channel.sync(durable_stream(socket), socket)
 
       def handle_in("phx_read", %{"after" => last}, %{assigns: %{phx_durable: true}} = socket)
           when is_integer(last) and last >= 0,
@@ -139,9 +139,8 @@ defmodule PhoenixDurableChannel.Channel do
     end)
 
     stream = stream_for.(socket)
-    socket = Phoenix.Socket.assign(socket, :phx_received, stream.received(socket))
     Phoenix.Channel.push(socket, "phx_reader", stream.reader(socket))
-    {:noreply, socket}
+    {:noreply, Phoenix.Socket.assign(socket, :phx_received, stream.received(socket))}
   end
 
   def unexpected_message(message, socket) do
@@ -187,7 +186,10 @@ defmodule PhoenixDurableChannel.Channel do
   def through_channel?(stream),
     do: Code.ensure_loaded?(stream) and function_exported?(stream, :since, 3)
 
-  def sync(socket), do: {:reply, {:ok, %{received: socket.assigns.phx_received}}, socket}
+  def sync(stream, socket),
+    do:
+      {:reply, {:ok, %{received: socket.assigns.phx_received, reader: stream.reader(socket)}},
+       socket}
 
   def read(stream, last, socket) do
     if through_channel?(stream),

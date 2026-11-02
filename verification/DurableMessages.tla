@@ -202,7 +202,9 @@ SyncReplyArrives ==
                /\ queue' = s
                /\ phase' = "synced"
                /\ toServer' = toServer \o [i \in DOMAIN resend |-> PushFrame(resend[i])]
-               /\ answeredBy' = <<[received |-> m.received, last |-> m.last]>>
+               /\ answeredBy' = <<[received |-> m.received,
+                                    last |-> IF Broken = "staleLast" /\ answeredBy # <<>>
+                                             THEN answeredBy[1].last ELSE m.last]>>
           ELSE UNCHANGED <<next, queue, phase, toServer, answeredBy>>
     /\ UNCHANGED <<up, syncId, answers, pushes, read, ledgerVars, running, oldVars, crashes,
                    faults, replacing, reset>>
@@ -231,21 +233,26 @@ AnswerRead ==
     /\ read' = read + 1
     /\ LET a == log[read + 1]
            matches == {i \in DOMAIN queue : queue[i].num = a.num /\ a.status # "forgotten"}
-       IN IF matches = {}
-          THEN UNCHANGED <<answers, queue>>
-          ELSE LET i == CHOOSE x \in matches : TRUE
-               IN /\ answers' = Append(answers, [id |-> queue[i].id, status |-> a.status])
-                  /\ queue' = IF Broken = "keepAnswered" THEN queue
-                               ELSE [j \in 1..(Len(queue) - 1) |->
-                                        IF j < i THEN queue[j] ELSE queue[j + 1]]
-    /\ UNCHANGED <<up, phase, next, syncId, pushes, answeredBy, ledgerVars, toServer, toClient, running,
+       IN /\ IF matches = {}
+             THEN UNCHANGED <<answers, queue>>
+             ELSE LET i == CHOOSE x \in matches : TRUE
+                  IN /\ answers' = Append(answers, [id |-> queue[i].id, status |-> a.status])
+                     /\ queue' = IF Broken = "keepAnswered" THEN queue
+                                  ELSE [j \in 1..(Len(queue) - 1) |->
+                                           IF j < i THEN queue[j] ELSE queue[j + 1]]
+          /\ IF a.status = "forgotten" /\ phase = "synced" /\ Broken # "noSyncOnSkip"
+             THEN /\ phase' = "syncing"
+                  /\ syncId' = syncId + 1
+                  /\ toServer' = Append(toServer, [k |-> "sync", sid |-> syncId + 1])
+             ELSE UNCHANGED <<phase, syncId, toServer>>
+    /\ UNCHANGED <<up, next, pushes, answeredBy, ledgerVars, toClient, running,
                    oldVars, crashes, faults, replacing, reset>>
 
 LosesUnread ==
     /\ answeredBy # <<>>
     /\ read >= answeredBy[1].last \/ Broken = "loseAtSync"
     /\ Broken # "noLoseUnread"
-    /\ LET handledBefore(e) == e.num # 0 /\ e.num <= answeredBy[1].received
+    /\ LET handledBefore(e) == e.num # 0 /\ (e.num <= answeredBy[1].received \/ Broken = "loseUnhandled")
            lost == SelectSeq(queue, handledBefore)
        IN /\ answers' = answers \o [i \in DOMAIN lost |-> [id |-> lost[i].id, status |-> "lost"]]
           /\ queue' = SelectSeq(queue, LAMBDA e : ~handledBefore(e))
@@ -255,7 +262,6 @@ LosesUnread ==
 
 Forgets ==
     /\ faults < MaxFaults
-    /\ ~up
     /\ \E i \in (read + 1)..Len(log) :
           log' = [log EXCEPT ![i].status = "forgotten"]
     /\ faults' = faults + 1
@@ -411,6 +417,10 @@ AnsweredAsHandled ==
 
 LostOnlyWhenForgotten ==
     reset = "no" /\ ~forgot => \A i \in DOMAIN answers : answers[i].status # "lost"
+
+LostOnlyWhenHandled ==
+    \A i \in DOMAIN answers :
+        answers[i].status = "lost" => \E j \in DOMAIN handled : handled[j].id = answers[i].id
 
 OnlyTakenAreAnswered == \A i \in DOMAIN answers : answers[i].status \notin {"notTaken", "unmatched"}
 

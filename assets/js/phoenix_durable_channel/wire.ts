@@ -24,7 +24,9 @@ export const decodeDurableReply = Schema.decodeUnknownSync(
   Schema.Struct({ number: Schema.Number, status: Schema.String, response: Schema.Unknown }),
 )
 
-export const decodeSyncReply = Schema.decodeUnknownSync(Schema.Struct({ received: Schema.Number }))
+export const decodeSyncReply = Schema.decodeUnknownSync(
+  Schema.Struct({ received: Schema.Number, reader: Schema.Unknown }),
+)
 
 export const decodeReadReply = Schema.decodeUnknownSync(
   Schema.Struct({ sent: Schema.Number, epoch: Schema.String }),

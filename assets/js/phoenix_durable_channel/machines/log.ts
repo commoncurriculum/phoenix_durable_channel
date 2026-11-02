@@ -23,6 +23,7 @@ type LogEvent =
   | { type: "CHANNEL_CLOSED" }
   | { type: "SYNCED"; received: number; last: number }
   | { type: "READ"; after: number }
+  | { type: "SKIPPED" }
   | { type: "SYNC_FAILED" }
 
 export type LogEmitted =
@@ -205,6 +206,7 @@ export const logMachine = setup({
           ],
         },
         REPLY: { guard: and(["isNotTaken", "isQueued"]), target: "backingOff" },
+        SKIPPED: "syncing",
       },
     },
     closed: {

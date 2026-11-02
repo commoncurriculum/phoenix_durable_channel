@@ -63,13 +63,14 @@ export class Durable implements ChannelExtension {
             return channel
               .push(CHANNEL_EVENTS.sync)
               .receive("ok", (response) => {
-                const { published, from } = this.reader.getSnapshot().context
+                const { received, reader } = decodeSyncReply(response)
+                const published = decodePublishedReader(reader)
+                this.reader.send({ type: "PUBLISHED", reader: published })
+                this.log.actor.send({ type: "SYNCED", received, last: published.last })
                 this.log.actor.send({
-                  type: "SYNCED",
-                  ...decodeSyncReply(response),
-                  last: published.last,
+                  type: "READ",
+                  after: this.reader.getSnapshot().context.from.after,
                 })
-                this.log.actor.send({ type: "READ", after: from.after })
               })
               .receive("timeout", () => this.log.actor.send({ type: "SYNC_FAILED" }))
           case "send":
@@ -121,6 +122,7 @@ export class Durable implements ChannelExtension {
               "channel",
               `${channel.topic} skipped durable messages ${event.after + 1} to ${event.next - 1}, which the store no longer has`,
             )
+            this.log.actor.send({ type: "SKIPPED" })
             return trigger(CHANNEL_EVENTS.skipped, { after: event.after, next: event.next })
           case "read":
             return channel

@@ -608,6 +608,22 @@ test("a durable push the server handled is answered reply_lost once the client h
   expect(await ledger(channel)).toEqual({ received: 2, sent: 2 })
 })
 
+test("a durable push whose answer the client skipped while joined is answered reply_lost", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("skipped-answer"), {}, { durable: true })
+  let skips = 0
+  channel.on("phx_skipped", () => skips++)
+  await join(channel)
+  const skipped = channel.push("action", { body: "skip_and_forget_reply" }, { durable: true })
+  expect(await answer(skipped)).toEqual({ status: "error", response: { reason: "reply_lost" } })
+  expect(skips).toBe(1)
+  expect(channel.state).toBe("joined")
+  const later = channel.push("action", { body: "later" }, { durable: true })
+  expect(await answer(later)).toEqual({ status: "ok", response: { body: "later" } })
+  expect(await ledger(channel)).toEqual({ received: 2, sent: 3 })
+})
+
 test("a Memory stream keeps what a joined channel received however long the channel stays idle", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()

@@ -248,11 +248,12 @@ Both directions are one list: the topic's stream.
 
 **The client's durable pushes:**
 
-- After every join the client sends `phx_sync`, and the server replies `{received}`: how many of the client's pushes it has handled, from the stream's last message with a count.
+- After every join the client sends `phx_sync`, and the server replies `{received, reader}`: how many of the client's pushes it has handled, from the stream's last message with a count, and a `phx_reader` read after it.
 - The server reads `received` once, at the join, and counts on from it in the channel's assigns: the join makes its process the only one taking the client's pushes. A stream reset while the process runs changes nothing until the next join, which reads it again.
 - The client numbers its pushes on from there and sends them in order. The server runs push n and appends its answer, a `phx_reply` message `{number, status, response}`, with `received` n in the same append, so the count and the answer are written together, as Kafka Streams commits its input offset with its output. The client reads the answer like any other durable message.
 - After a rejoin the client keeps waiting on the pushes at or below `received`, whose answers are in the stream, and numbers the rest on from `received` + 1 and sends them again. A push numbered at or below the count is not run again.
-- The server reads `received` before it pushes `phx_reader`, so every answer counted in `received` is at or before that reader's `last`. Once the client has read to that `last`, a push at or below `received` still waiting lost its answer, when the store forgot it: it is answered `{:error, %{reason: "reply_lost"}}`.
+- Every answer counted in `received` is at or before the sync reply's `last`. Once the client has read to that `last`, a push at or below `received` still waiting lost its answer, when the store forgot it: it is answered `{:error, %{reason: "reply_lost"}}`.
+- A read that skips messages the store no longer has makes the client sync again, so an answer skipped while joined is answered `reply_lost` the same way.
 - A push is answered only as far as the client reads: on a type the client has no reader for, or while its reader backs off, it waits until its channel closes.
 - A stop's answer is also sent to the client as a plain reply, since a read from the store's own protocol stops with the channel. The client takes whichever arrives first.
 - A push the server can't take now (`{:retry, reason, socket}`) is sent again, with the ones after it, after a backoff.

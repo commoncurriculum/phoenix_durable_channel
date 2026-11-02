@@ -330,15 +330,15 @@ defmodule TestServer.ExpiringDurableStreams do
   def reader(socket) do
     reader = DurableStreams.reader(socket)
 
-    cond do
-      TestServer.Joins.first_time?("join:" <> socket.topic) ->
+    case TestServer.Joins.increment("reader:" <> socket.topic) do
+      calls when calls <= 2 ->
         %{reader | token: DurableStreams.token("read", socket.topic, -60)}
 
-      TestServer.Joins.first_time?("slow_reader:" <> socket.topic) ->
+      3 ->
         Process.sleep(900)
         reader
 
-      true ->
+      _calls ->
         reader
     end
   end
@@ -537,6 +537,18 @@ defmodule TestServer.DurableChannel do
   def handle_in("action", %{"body" => "lose_and_forget_reply"}, socket) do
     send(self(), :forget)
     Process.exit(socket.transport_pid, :kill)
+    {:reply, :ok, socket}
+  end
+
+  def handle_in("action", %{"body" => "skip_and_forget_reply"}, socket) do
+    durable_stream(socket).append(
+      socket,
+      "update",
+      %{body: "unseen"},
+      socket.assigns.phx_received
+    )
+
+    send(self(), :forget)
     {:reply, :ok, socket}
   end
 

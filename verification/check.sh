@@ -71,6 +71,9 @@ renumberHandled HandledOnceUnlessCrashed INVARIANT
 keepAnswered AnsweredOnce INVARIANT
 loseAtSync LostOnlyWhenForgotten INVARIANT
 noLoseUnread CatchesUp PROPERTY
+staleLast LostOnlyWhenForgotten INVARIANT
+noSyncOnSkip CatchesUp PROPERTY
+loseUnhandled LostOnlyWhenHandled INVARIANT
 retryIsAnswer OnlyTakenAreAnswered INVARIANT
 unmatchedIsAnswer OnlyTakenAreAnswered INVARIANT
 staleCount HandledOnceUnlessCrashed INVARIANT
