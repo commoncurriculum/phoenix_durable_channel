@@ -25,7 +25,7 @@ Each requirement below is the owner's. Check every one, every time. A requiremen
 10. **The phoenix.js API.** An app swaps `import { Socket } from "phoenix"` for this package and changes nothing else. A change to that API needs the owner's yes first.
 11. **Old clients keep working.** A server running this library still serves phoenix.js 1.7 clients (V1 and V2 serializers) without a reload.
 12. **100% coverage from real tests.** `pnpm test` runs in real Chromium against the real Phoenix app and real stores, and fails under 100% lines, branches, functions and statements. No mocks, stubs or fakes; Phoenix's own vendored tests are the only exception.
-13. **TLA+.** `verification/check.sh` passes: every model holds on the code as it is, and every `Broken` variant breaks the rule it names. A change to a machine or to `lib/` changes the model of it in the same commit.
+13. **TLA+.** `verification/check.sh` passes: every model holds on the code as it is, and every `Broken` variant breaks the rule it names. A change to a machine or to `lib/` changes the model of it in the same commit. Encoding a frame is outside `PhoenixDurableChannel.tla`: that a frame encoded for one connection never goes out on another is pinned by the socket's RecordedWebSocket test (`integration_test/socket.browser.test.ts`).
 14. **Jepsen.** `jepsen/run.sh` with real Jepsen, every store and both transports, finds the history valid: each durable message handled once and in order, none lost.
 
 ## Before saying done
