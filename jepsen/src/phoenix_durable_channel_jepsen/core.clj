@@ -1,15 +1,4 @@
 (ns phoenix-durable-channel-jepsen.core
-  "Jepsen test of phoenix-durable-channel's durable messages.
-
-  Three nodes run phoenix_app/, a Phoenix app with one durable channel on the library's server
-  side, as one Erlang cluster. One of the library's stores, shared by all nodes, is both its
-  ledger and its stream: MongoDB (read through the channel), S2 Lite, or the Durable Streams
-  worker on Durable Objects under wrangler (each read by the client with its own protocol).
-  The clients are real phoenix-durable-channel sockets in Chromium (driver/driver.mjs); every new
-  connection goes to a random node. Each client pushes durable `add {value, position}`,
-  position being the push's place among its own, and the server appends each to the
-  client's stream as `added`. The final read is each client's stream, straight from its
-  store, and what each client was delivered."
   (:require [cheshire.core :as json]
             [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
@@ -33,12 +22,10 @@
 (def project "phoenix-durable-channel-jepsen")
 
 (defn container-name
-  "The Docker container docker/compose.yml runs for `service`."
   [service]
   (str project "-" service "-1"))
 
 (defn docker!
-  "Runs `docker` with `arguments`; throws unless it exits 0. Returns stdout."
   [& arguments]
   (let [{:keys [exit out err]} (apply sh "docker" arguments)]
     (when-not (zero? exit)
@@ -63,8 +50,6 @@
   (str (System/getenv "REPOSITORY") "/jepsen/docker/start-node.sh"))
 
 (defn start-node!
-  "Starts phoenix_app/ on `node` and waits until it serves. A node still running, or paused, is
-  resumed instead: a second server could not take the port."
   [test node]
   (let [peers (->> (:nodes test) (remove #{node}) (map #(str "jepsen@" %)) (str/join ","))]
     (c/exec* (str "pkill -CONT -x beam.smp || setsid nohup " node-script " 4000 "
@@ -77,7 +62,6 @@
   (c/exec* "while pgrep -x beam.smp >/dev/null; do sleep 0.1; done"))
 
 (defn db
-  "phoenix_app/ on every node."
   []
   (reify
     db/DB
@@ -101,13 +85,11 @@
 (def ^HttpClient http (HttpClient/newHttpClient))
 
 (defn http!
-  "Sends `request`; returns [status body]."
   [^HttpRequest request]
   (let [response (.send http request (HttpResponse$BodyHandlers/ofString))]
     [(.statusCode response) (.body response)]))
 
 (defn driver!
-  "Calls the driver's `path` with `body`; returns its JSON answer."
   [path body timeout-ms]
   (let [[status answer] (http! (-> (HttpRequest/newBuilder (URI. (str "http://127.0.0.1:4100" path)))
                                    (.timeout (Duration/ofMillis timeout-ms))
@@ -121,8 +103,6 @@
 (defn topic [client] (str "jepsen:" client))
 
 (defmulti read-stream
-  "The `added` payloads kept in `client`'s stream, in order, as [value position]. The stream
-  also holds the answers to the client's pushes, which are left out."
   (fn [test _client] (:durable-store test)))
 
 (defmethod read-stream "mongo" [_test client]
@@ -134,8 +114,6 @@
        (mapv #(mapv parse-long (str/split % #"\|")))))
 
 (defn read-token
-  "A JWT that reads `stream`, signed with the worker project's secret, as
-  PhoenixDurableChannel.Stream.DurableStreams makes them."
   [stream]
   (let [encode #(.encodeToString (.withoutPadding (java.util.Base64/getUrlEncoder)) ^bytes %)
         part #(encode (.getBytes ^String (json/generate-string %) "UTF-8"))
@@ -186,14 +164,11 @@
         (throw (ex-info (str "S2 read " status ": " body) {:status status}))))))
 
 (defn client-for
-  "Each thread pushes as one client; several threads share one, so a client has several
-  pushes in flight at once."
   [test op]
   (let [thread (mod (:process op) (:concurrency test))]
     (nth (:clients test) (mod thread (count (:clients test))))))
 
 (defn wait-until!
-  "Calls `done?` every half second until it is true or `timeout-ms` passes."
   [timeout-ms done?]
   (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
     (loop []
@@ -239,17 +214,10 @@
   (close! [_ _test]))
 
 (defn dedupe-adjacent
-  "`entries` with each run of equal neighbours kept once."
   [entries]
   (map first (partition-by identity entries)))
 
 (defn client-problems
-  "What is wrong with one client's stream and delivery, or nil.
-
-  The stream must hold the client's pushes in the order it pushed them, from the first,
-  with every acknowledged one. A push may be in it twice in a row: the library runs a push
-  again when its channel process dies between running it and recording it, so that is
-  counted as a rerun, not a problem. Delivered must be exactly the stream."
   [client stream delivered pushes]
   (let [handled (dedupe-adjacent stream)
         positions (map second handled)
@@ -270,9 +238,6 @@
     (when (seq problems) [client problems])))
 
 (defn durable-checker
-  "Every client's stream holds its pushes once each (or twice in a row, a rerun), in the
-  order pushed, with every acknowledged one; each client was delivered exactly its stream;
-  and no push was answered with an error."
   []
   (reify checker/Checker
     (check [_ test history _opts]
@@ -294,13 +259,10 @@
          :problems problems}))))
 
 (defn gateway
-  "The address the node sees the clients' connections come from: the Docker host."
   []
   (str/trim (c/exec* "ip route | awk '/default/ {print $3}'")))
 
 (defn cut-off-clients-nemesis
-  "Drops all traffic between one node and the clients, without closing anything: their
-  sockets on that node go half-open, the way a dropped mobile connection leaves them."
   []
   (reify
     nemesis/Nemesis
@@ -327,8 +289,6 @@
     (fs [_] #{:cut-off-clients :reconnect-clients})))
 
 (defn nemesis-package
-  "Jepsen's partitions between nodes, kills and pauses, plus cutting a node off from the
-  clients."
   [opts]
   (let [faults (set (:faults opts))
         options {:db (:db opts)
