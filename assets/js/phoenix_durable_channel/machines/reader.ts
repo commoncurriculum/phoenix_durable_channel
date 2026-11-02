@@ -1,4 +1,4 @@
-import { and, assign, enqueueActions, fromCallback, not, setup } from "xstate"
+import { and, assertEvent, assign, enqueueActions, fromCallback, not, setup } from "xstate"
 import { backoff, ignore, type Data } from "../actors"
 import type { Position, PublishedReader, Resume, StreamMessage } from "../stream"
 
@@ -10,7 +10,6 @@ export type ReaderEvent =
   | { type: "FAILED" }
   | { type: "READ_REPLY"; read: number; sent: number; epoch: string }
   | { type: "READ_REFUSED"; read: number }
-  | { type: "AHEAD" }
   | { type: "CHANNEL_JOINED" }
   | { type: "CHANNEL_LEFT" }
   | { type: "STOP" }
@@ -32,7 +31,7 @@ type ReaderContext = Data<{
   tries: number
 }>
 
-export const readerMachine = setup({
+const reader = setup({
   types: {
     context: {} as ReaderContext,
     input: {} as { after: number | null },
@@ -48,6 +47,7 @@ export const readerMachine = setup({
       event.type === "MESSAGE" && event.message.number > context.from.after,
     isNextInLine: ({ context, event }) =>
       event.type === "MESSAGE" && event.message.number === context.from.after + 1,
+    isAhead: ({ context, event }) => event.type === "READ_REPLY" && event.sent < context.from.after,
     isThisRead: ({ context, event }) =>
       (event.type === "READ_REPLY" || event.type === "READ_REFUSED") &&
       event.read === context.reads,
@@ -71,7 +71,24 @@ export const readerMachine = setup({
       },
     ),
   },
-}).createMachine({
+})
+
+const takeRead = reader.enqueueActions(({ context, event, enqueue }) => {
+  assertEvent(event, "READ_REPLY")
+  const unseen = [...context.held.values()].filter((message) => message.number > context.from.after)
+  for (const message of unseen.sort((a, b) => a.number - b.number))
+    enqueue({
+      type: "advance",
+      params: { next: message.number, after: message.number, message },
+    })
+  enqueue({
+    type: "advance",
+    params: { next: event.sent + 1, after: event.sent, message: null },
+  })
+  enqueue.assign({ held: new Map(), tries: 0 })
+})
+
+export const readerMachine = reader.createMachine({
   id: "reader",
   context: ({ input }) => ({
     after: input.after,
@@ -167,26 +184,8 @@ export const readerMachine = setup({
                   },
                 })),
               },
-              {
-                guard: "isThisRead",
-                target: "live",
-                actions: enqueueActions(({ context, event, enqueue }) => {
-                  if (event.sent < context.from.after) enqueue.raise({ type: "AHEAD" })
-                  const unseen = [...context.held.values()].filter(
-                    (message) => message.number > context.from.after,
-                  )
-                  for (const message of unseen.sort((a, b) => a.number - b.number))
-                    enqueue({
-                      type: "advance",
-                      params: { next: message.number, after: message.number, message },
-                    })
-                  enqueue({
-                    type: "advance",
-                    params: { next: event.sent + 1, after: event.sent, message: null },
-                  })
-                  enqueue.assign({ tries: 0 })
-                }),
-              },
+              { guard: and(["isThisRead", "isAhead"]), target: "live.ahead", actions: takeRead },
+              { guard: "isThisRead", target: "live", actions: takeRead },
             ],
             READ_REFUSED: { guard: "isThisRead", target: "backingOff" },
           },
@@ -209,7 +208,6 @@ export const readerMachine = setup({
               },
               { target: "backingOff" },
             ],
-            AHEAD: ".ahead",
           },
           states: {
             inLine: {},
