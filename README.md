@@ -222,6 +222,7 @@ A durable push is answered `"timeout"` only when its channel is closed (`channel
 - **Pages still on phoenix.js keep working.** They speak V2 frames without a sixth slot, which the serializer reads as before, and channels they join without `phx_durable` behave as plain Phoenix channels.
 - **A new page that reaches an old pod waits.** An old pod answers its durable join without `phx_durable: true`; the client treats that join as not joined, keeps its durable pushes, and joins again after a backoff until a pod with this library answers.
 - **Upgrading from a version of this library that answered the durable join with `phx_reader` is a breaking change.** This version answers `phx_durable: true` and pushes `phx_reader` after the join. A page loaded before the deploy treats the new reply as not joined and joins again until it is reloaded, its durable pushes waiting. Deploy it when pages can be reloaded, or reload them.
+- **Upgrading from a version of this library whose durable pushes carried no epoch is a breaking change.** A page loaded before the deploy can't decode a push with an epoch, so it gets none of its durable messages from a new pod; a new page reading through the channel from a pod still on that version delivers none of them either, and reports them as passed. Deploy the server and the client together when pages can be reloaded, or reload them.
 
 ## Differences from phoenix.js 1.7
 
