@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest"
 import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
 import { LongPoll } from "../assets/js/phoenix_durable_channel/longpoll"
 import { Serializer } from "../assets/js/phoenix_durable_channel/serializer"
-import { answer, join, nextEvent, openSocket, topic, waitFor } from "./support/helpers"
+import { answer, join, nextEvent, openSocket, phoenixUrl, topic, waitFor } from "./support/helpers"
 
 const fast = { rejoinAfterMs: () => 10, reconnectAfterMs: () => 10 }
 
@@ -719,6 +719,25 @@ test("a store that numbers afresh before a topic's first message is read once, a
   await waitFor(() => seen.length === 3)
   await new Promise((resolve) => setTimeout(resolve, 300))
   expect(seen).toEqual(["1", "2", "3"])
+})
+
+test("a channel joined over Phoenix's V1 serializer gets each durable push as a plain push", async () => {
+  const connection = new WebSocket(
+    `${phoenixUrl.replace(/^http/, "ws")}/socket/websocket?vsn=1.0.0`,
+  )
+  const received: Array<{ event: string; payload: unknown }> = []
+  connection.onmessage = (message) => received.push(JSON.parse(message.data as string))
+  await new Promise((resolve) => (connection.onopen = resolve))
+  const name = durableTopic("v1")
+  const send = (event: string, payload: unknown, ref: string) =>
+    connection.send(JSON.stringify({ topic: name, event, payload, ref, join_ref: "1" }))
+  send("phx_join", {}, "1")
+  send("publish", { body: "plain" }, "2")
+  await waitFor(() => received.some((message) => message.event === "update"))
+  connection.close()
+  expect(received.find((message) => message.event === "update")?.payload).toEqual({
+    body: "plain",
+  })
 })
 
 test("a live read past the stream's last number ends on a message from another epoch, and delivers it", async () => {

@@ -49,7 +49,10 @@ defmodule TestServer.Endpoint do
   @options [
     check_origin: false,
     connect_info: [:auth_token],
-    serializer: [{PhoenixDurableChannel.Serializer, "~> 2.0.0"}]
+    serializer: [
+      {Phoenix.Socket.V1.JSONSerializer, "~> 1.0.0"},
+      {PhoenixDurableChannel.Serializer, "~> 2.0.0"}
+    ]
   ]
 
   socket("/socket", TestServer.UserSocket,

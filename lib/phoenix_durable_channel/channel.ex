@@ -167,8 +167,16 @@ defmodule PhoenixDurableChannel.Channel do
   def push_durable(stream, socket, event, payload) do
     number = stream.append(socket, event, payload)
 
-    if through_channel?(stream),
-      do: Phoenix.Channel.push(socket, event, {:durable, number, stream.epoch(socket), payload})
+    cond do
+      socket.assigns[:phx_durable] != true ->
+        Phoenix.Channel.push(socket, event, payload)
+
+      through_channel?(stream) ->
+        Phoenix.Channel.push(socket, event, {:durable, number, stream.epoch(socket), payload})
+
+      true ->
+        :ok
+    end
 
     :ok
   end
