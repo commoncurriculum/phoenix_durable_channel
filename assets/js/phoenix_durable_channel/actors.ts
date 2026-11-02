@@ -5,6 +5,7 @@ import {
   fromPromise,
   type Actor,
   type AnyActorLogic,
+  type EmittedFrom,
   type InputFrom,
   type SnapshotFrom,
 } from "xstate"
@@ -14,22 +15,30 @@ export const sleep = fromPromise<void, { ms: number | null }>(({ input, signal }
   Effect.runPromise(input.ms === null ? Effect.never : Effect.sleep(input.ms), { signal }),
 )
 
-export type Later = (effect: () => void) => void
-
 export function startMachine<Logic extends AnyActorLogic>(
   logic: Logic,
-  input: (later: Later) => InputFrom<Logic>,
-  observe: (snapshot: SnapshotFrom<Logic>) => void = ignore,
+  input: InputFrom<Logic>,
+  observe: (snapshot: SnapshotFrom<Logic>) => void,
+  handle: (event: EmittedFrom<Logic>) => void,
 ): Actor<Logic> {
-  const queue: Array<() => void> = []
-  const actor = createActor(logic, {
-    input: input((effect) => queue.push(effect)),
-  })
-  actor.subscribe((snapshot) => {
+  const actor = createActor(logic, { input })
+  let observed: SnapshotFrom<Logic> | null = null
+  const look = (snapshot: SnapshotFrom<Logic>) => {
+    if (snapshot === observed) return
+    observed = snapshot
     observe(snapshot)
-    for (const effect of queue.splice(0)) effect()
+  }
+  actor.subscribe(look)
+  actor.on("*", (event) => {
+    look(actor.getSnapshot())
+    handle(event)
   })
   return actor.start()
+}
+
+export function tagged<Tag>(snapshot: { tags: Set<string> }, decode: (tag: unknown) => Tag): Tag {
+  const [tag] = snapshot.tags
+  return decode(tag)
 }
 
 export interface CloseDetails {

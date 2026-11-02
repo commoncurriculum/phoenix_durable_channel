@@ -5,6 +5,9 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
 
   @epoch "mongo"
 
+  @impl PhoenixDurableChannel.Stream
+  def delivery, do: :channel
+
   def create_indexes do
     Enum.each([config()[:messages], config()[:replies]], fn collection ->
       :ok =

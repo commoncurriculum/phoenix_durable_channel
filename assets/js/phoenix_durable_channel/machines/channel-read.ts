@@ -1,14 +1,18 @@
-import { assign, setup } from "xstate"
-import type { Position, ReadCallbacks, StreamMessage } from "../stream"
+import { assign, emit, enqueueActions, setup } from "xstate"
+import type { Position, StreamMessage } from "../stream"
 
 type ChannelReadEvent =
   | { type: "MESSAGE"; message: StreamMessage }
   | { type: "READ_REPLY"; sent: number; epoch: string }
   | { type: "LOST" }
 
+export type ChannelReadEmitted =
+  | { type: "deliver"; message: StreamMessage }
+  | { type: "moved"; epoch: string }
+  | { type: "failed" }
+
 interface ChannelReadContext {
   from: Position
-  callbacks: ReadCallbacks
   held: ReadonlyMap<number, StreamMessage>
   next: number
 }
@@ -16,8 +20,9 @@ interface ChannelReadContext {
 export const channelReadMachine = setup({
   types: {
     context: {} as ChannelReadContext,
-    input: {} as { from: Position; callbacks: ReadCallbacks },
+    input: {} as { from: Position },
     events: {} as ChannelReadEvent,
+    emitted: {} as ChannelReadEmitted,
   },
   guards: {
     isNext: ({ context, event }) =>
@@ -28,20 +33,20 @@ export const channelReadMachine = setup({
     hold: assign(({ context }, message: StreamMessage) => ({
       held: new Map(context.held).set(message.number, message),
     })),
-    deliverHeld: assign(({ context }, sent: number) => {
+    deliverHeld: enqueueActions(({ context, enqueue }, sent: number) => {
       for (const message of [...context.held.values()].sort((a, b) => a.number - b.number))
-        context.callbacks.deliver(message)
-      return { held: new Map(), next: sent + 1 }
+        enqueue.emit({ type: "deliver", message })
+      enqueue.assign({ held: new Map(), next: sent + 1 })
     }),
-    moved: ({ context }, epoch: string) => context.callbacks.moved(epoch),
-    deliver: assign(({ context }, message: StreamMessage) => {
-      context.callbacks.deliver(message)
-      return { next: message.number + 1 }
+    moved: emit((_, epoch: string) => ({ type: "moved" as const, epoch })),
+    deliver: enqueueActions(({ enqueue }, message: StreamMessage) => {
+      enqueue.emit({ type: "deliver", message })
+      enqueue.assign({ next: message.number + 1 })
     }),
   },
 }).createMachine({
   id: "channelRead",
-  context: ({ input }) => ({ ...input, held: new Map(), next: 0 }),
+  context: ({ input }) => ({ from: input.from, held: new Map(), next: 0 }),
   initial: "waiting",
   on: { LOST: ".ended" },
   states: {
@@ -76,7 +81,7 @@ export const channelReadMachine = setup({
     },
     ended: {
       type: "final",
-      entry: ({ context }) => context.callbacks.failed("ended"),
+      entry: emit({ type: "failed" }),
     },
   },
 })

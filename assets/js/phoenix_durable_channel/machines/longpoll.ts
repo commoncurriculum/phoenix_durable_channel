@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { assign, fromPromise, setup } from "xstate"
+import { assign, emit, enqueueActions, fromPromise, setup } from "xstate"
 import { sleep, type CloseDetails } from "../actors"
 import { appendParams } from "../url"
 import { decodePollResponse } from "../wire"
@@ -47,18 +47,20 @@ const request = fromPromise<PollResponse, RequestInput>(({ input, signal }) =>
   ),
 )
 
-export interface LongPollHooks {
+export interface LongPollSettings {
   endpoint: string
   authToken: string | null
   timeout(): number
-  opened(): void
-  message(data: string): void
-  errored(error: unknown): void
-  closed(details: CloseDetails): void
 }
 
+export type LongPollEmitted =
+  | { type: "opened" }
+  | { type: "message"; data: string }
+  | { type: "errored"; error: unknown }
+  | ({ type: "closed" } & CloseDetails)
+
 interface LongPollContext {
-  hooks: LongPollHooks
+  settings: LongPollSettings
   token: string | null
   batch: Array<string>
   sending: Array<string>
@@ -74,12 +76,12 @@ const internalServerError: Failure = {
 }
 
 const poll = (context: LongPollContext): RequestInput => ({
-  endpoint: context.hooks.endpoint,
+  endpoint: context.settings.endpoint,
   token: context.token,
-  authToken: context.hooks.authToken,
+  authToken: context.settings.authToken,
   method: "GET",
   body: null,
-  timeout: context.hooks.timeout(),
+  timeout: context.settings.timeout(),
 })
 
 const pollFailures: Record<string, Failure> = {
@@ -95,8 +97,10 @@ const publishFailures: Record<string, Failure> = {
 export const longPollMachine = setup({
   types: {
     context: {} as LongPollContext,
-    input: {} as { hooks: LongPollHooks },
+    input: {} as { settings: LongPollSettings },
     events: {} as LongPollEvent,
+    emitted: {} as LongPollEmitted,
+    tags: {} as "connecting" | "open" | "closed",
   },
   actors: { request, sleep },
   guards: {
@@ -108,25 +112,28 @@ export const longPollMachine = setup({
     keepToken: assign(({ context }, output: PollResponse) => ({
       token: output.token,
     })),
-    deliver: ({ context }, output: PollResponse) => {
-      for (const data of output.messages) context.hooks.message(data)
-    },
+    deliver: enqueueActions(({ enqueue }, output: PollResponse) => {
+      for (const data of output.messages) enqueue.emit({ type: "message", data })
+    }),
     collect: assign(({ context }, frame: string) => ({
       batch: [...context.batch, frame],
     })),
-    fail: ({ context }, params: { output: PollResponse; failures: Record<string, Failure> }) => {
-      const { status } = params.output
-      context.hooks.errored(status)
-      context.hooks.closed({
-        ...(params.failures[status] ?? internalServerError),
-        wasClean: false,
-      })
-    },
+    fail: enqueueActions(
+      ({ enqueue }, params: { output: PollResponse; failures: Record<string, Failure> }) => {
+        const { status } = params.output
+        enqueue.emit({ type: "errored", error: status })
+        enqueue.emit({
+          type: "closed",
+          ...(params.failures[status] ?? internalServerError),
+          wasClean: false,
+        })
+      },
+    ),
   },
 }).createMachine({
   id: "longpoll",
   context: ({ input }) => ({
-    hooks: input.hooks,
+    settings: input.settings,
     token: null,
     batch: [],
     sending: [],
@@ -136,16 +143,17 @@ export const longPollMachine = setup({
     SEND: { actions: { type: "collect", params: ({ event }) => event.frame } },
     CLOSE: {
       target: ".closed",
-      actions: ({ context, event }) =>
-        context.hooks.closed({
-          code: event.code,
-          reason: event.reason,
-          wasClean: event.wasClean,
-        }),
+      actions: emit(({ event }) => ({
+        type: "closed" as const,
+        code: event.code,
+        reason: event.reason,
+        wasClean: event.wasClean,
+      })),
     },
   },
   states: {
     starting: {
+      tags: "connecting",
       invoke: { src: "sleep", input: { ms: 0 }, onDone: "running" },
     },
     running: {
@@ -155,6 +163,7 @@ export const longPollMachine = setup({
           initial: "connecting",
           states: {
             connecting: {
+              tags: "connecting",
               invoke: {
                 src: "request",
                 input: ({ context }) => poll(context),
@@ -187,7 +196,8 @@ export const longPollMachine = setup({
               },
             },
             open: {
-              entry: ({ context }) => context.hooks.opened(),
+              tags: "open",
+              entry: emit({ type: "opened" }),
               initial: "polling",
               states: {
                 polling: {
@@ -270,12 +280,9 @@ export const longPollMachine = setup({
               invoke: {
                 src: "request",
                 input: ({ context }) => ({
-                  endpoint: context.hooks.endpoint,
-                  token: context.token,
-                  authToken: context.hooks.authToken,
+                  ...poll(context),
                   method: "POST" as const,
                   body: context.sending.join("\n"),
-                  timeout: context.hooks.timeout(),
                 }),
                 onDone: [
                   {
@@ -305,6 +312,6 @@ export const longPollMachine = setup({
         },
       },
     },
-    closed: { type: "final" },
+    closed: { type: "final", tags: "closed" },
   },
 })

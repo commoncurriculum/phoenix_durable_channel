@@ -20,6 +20,32 @@ async function ledger(channel: Channel): Promise<unknown> {
   return (await answer(channel.push("ledger"))).response
 }
 
+test("a durable push whose handler stops the channel is answered and recorded", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const name = durableTopic("stop")
+  const first = socket.channel(name, {}, { durable: true })
+  await join(first)
+  expect(await answer(first.push("action", { body: "stop" }, { durable: true }))).toEqual({
+    status: "ok",
+    response: { stopped: true },
+  })
+  await waitFor(() => first.state === "closed")
+
+  const second = socket.channel(name, {}, { durable: true })
+  await join(second)
+  expect(await ledger(second)).toEqual({ received: 1, sent: 0 })
+  expect(await answer(second.push("action", { body: "stop_quietly" }, { durable: true }))).toEqual({
+    status: "ok",
+    response: {},
+  })
+  await waitFor(() => second.state === "closed")
+
+  const third = socket.channel(name, {}, { durable: true })
+  await join(third)
+  expect(await ledger(third)).toEqual({ received: 2, sent: 0 })
+})
+
 test("durable messages go both ways once and in order, beside fire-and-forget ones", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()
@@ -141,7 +167,7 @@ test("a reply lost with the connection is sent again, handled once, and answered
   )
 })
 
-test("a ledger that lost what it kept starts both directions again from its numbers", async () => {
+test("a ledger that lost what it kept starts both directions again from its numbers at the next join", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()
   const channel = socket.channel(durableTopic("reset"), {}, { durable: true })
@@ -153,13 +179,13 @@ test("a ledger that lost what it kept starts both directions again from its numb
   await waitFor(() => seen.length === 2)
 
   await answer(channel.push("reset"))
+  channel.push("kill_transport")
+  await waitFor(() => channel.state !== "joined")
+  await waitFor(() => channel.state === "joined")
   expect(await answer(channel.push("action", { body: "after" }, { durable: true }))).toEqual({
     status: "ok",
     response: { body: "after" },
   })
-  channel.push("kill_transport")
-  await waitFor(() => channel.state !== "joined")
-  await waitFor(() => channel.state === "joined")
   await answer(channel.push("publish", { body: "1 again" }))
   await waitFor(() => seen.length === 3)
   expect(seen).toEqual(["1", "2", "1 again"])
@@ -212,7 +238,11 @@ test("`after` resumes from a number the app saved, and the first read starts fro
 test("a sync with no answer is tried again; a durable push and a read die with their channel", async () => {
   const socket = openSocket("/socket", { ...fast, timeout: 100 })
   socket.connect()
-  const channel = socket.channel(durableTopic("slow_sync"), {}, { durable: true })
+  const channel = socket.channel(
+    durableTopic("slow_sync"),
+    { busy_after_join: true },
+    { durable: true },
+  )
   join(channel)
   const action = channel.push("action", { body: "after a slow sync" }, { durable: true })
   expect(await answer(action)).toEqual({

@@ -1,6 +1,6 @@
 import { Effect, Stream as EffectStream, Fiber } from "effect"
 import type { Actor, EventFromLogic } from "xstate"
-import { startMachine } from "./actors"
+import { ignore, startMachine } from "./actors"
 import { channelReadMachine } from "./machines/channel-read"
 import { readerMachine } from "./machines/reader"
 import type { Push } from "./push"
@@ -223,14 +223,16 @@ export class ChannelStream implements MessageStream {
   constructor(private readonly channel: ChannelReads) {}
 
   read(from: Position, callbacks: ReadCallbacks): () => void {
-    const actor = startMachine(channelReadMachine, (later) => ({
-      from,
-      callbacks: {
-        deliver: (message) => later(() => callbacks.deliver(message)),
-        moved: (epoch) => later(() => callbacks.moved(epoch)),
-        failed: (error) => later(() => callbacks.failed(error)),
-      },
-    }))
+    const actor = startMachine(channelReadMachine, { from }, ignore, (event) => {
+      switch (event.type) {
+        case "deliver":
+          return callbacks.deliver(event.message)
+        case "moved":
+          return callbacks.moved(event.epoch)
+        case "failed":
+          return callbacks.failed("ended")
+      }
+    })
     const send = (event: EventFromLogic<typeof channelReadMachine>) => {
       if (actor.getSnapshot().status === "active") actor.send(event)
     }
@@ -258,12 +260,9 @@ export class Reader {
     deliver: (message: StreamMessage) => void,
     backoffMs: (tries: number) => number,
   ) {
-    this.actor = startMachine(readerMachine, (later) => ({
-      stream,
-      from,
-      deliver: (message) => later(() => deliver(message)),
-      backoffMs,
-    }))
+    this.actor = startMachine(readerMachine, { stream, from, backoffMs }, ignore, (event) =>
+      deliver(event.message),
+    )
   }
 
   stop(): void {

@@ -1,5 +1,5 @@
 import type { ActivityStatus, ActivityTracker } from "@supergrain/activity"
-import { assign, fromCallback, raise, sendTo, setup } from "xstate"
+import { assign, emit, enqueueActions, fromCallback, raise, sendTo, setup } from "xstate"
 import {
   sleep,
   transport,
@@ -7,11 +7,12 @@ import {
   type TransportConstructor,
   type TransportEvent,
 } from "../actors"
+import type { ConnectionState } from "../constants"
 import type { EncodedMessage, Message } from "../serializer"
 
 export type TransportKind = "websocket" | "longpoll"
 
-export interface SocketHooks {
+export interface SocketSettings {
   url(): string
   protocols(): Array<string> | undefined
   binaryType: BinaryType
@@ -20,17 +21,6 @@ export interface SocketHooks {
   activity: ActivityTracker | null
   makeRef(): string
   reconnectAfterMs(tries: number): number
-  send(message: Message): void
-  buffered(message: Message): void
-  opened(): void
-  connectionLost(): void
-  closed(details: CloseDetails): void
-  errored(error: unknown): void
-  message(data: EncodedMessage): void
-  disconnected(): void
-}
-
-export interface SocketSettings {
   longPollFallbackMs: number | null
   heartbeatIntervalMs: number
   heartbeatTimeoutMs: number
@@ -52,6 +42,16 @@ type SocketEvent =
   | { type: "CONNECTION_LOST" }
   | { type: "REPLACE_TRANSPORT"; transport: TransportKind }
 
+export type SocketEmitted =
+  | { type: "send"; message: Message }
+  | { type: "buffered"; message: Message }
+  | { type: "opened" }
+  | { type: "connectionLost" }
+  | ({ type: "closed" } & CloseDetails)
+  | { type: "errored"; error: unknown }
+  | { type: "message"; data: EncodedMessage }
+  | { type: "disconnected" }
+
 const watchActivity = fromCallback<SocketEvent, { activity: ActivityTracker | null }, SocketEvent>(
   ({ input, sendBack }) => {
     const { activity } = input
@@ -67,7 +67,6 @@ const watchActivity = fromCallback<SocketEvent, { activity: ActivityTracker | nu
 )
 
 interface SocketContext {
-  hooks: SocketHooks
   settings: SocketSettings
   transport: TransportKind
   webSocketOpened: boolean
@@ -102,11 +101,12 @@ export const socketMachine = setup({
   types: {
     context: {} as SocketContext,
     input: {} as {
-      hooks: SocketHooks
       settings: SocketSettings
       transport: TransportKind
     },
     events: {} as SocketEvent,
+    emitted: {} as SocketEmitted,
+    tags: {} as ConnectionState,
   },
   actors: { sleep, transport, watchActivity },
   guards: {
@@ -119,13 +119,14 @@ export const socketMachine = setup({
   },
   actions: {
     fallBack: assign({ transport: "longpoll", fellBack: true }),
-    close: assign(({ context }, details: CloseDetails) => {
-      context.hooks.closed(details)
-      return { closeWasClean: details.wasClean }
+    loseConnection: emit({ type: "connectionLost" }),
+    close: enqueueActions(({ enqueue }, details: CloseDetails) => {
+      enqueue.emit({ type: "closed", ...details })
+      enqueue.assign({ closeWasClean: details.wasClean })
     }),
-    buffer: assign(({ context }, message: Message) => {
-      context.hooks.buffered(message)
-      return { buffer: [...context.buffer, message] }
+    buffer: enqueueActions(({ context, enqueue }, message: Message) => {
+      enqueue.emit({ type: "buffered", message })
+      enqueue.assign({ buffer: [...context.buffer, message] })
     }),
     dropBuffer: assign({ buffer: [] }),
   },
@@ -133,7 +134,6 @@ export const socketMachine = setup({
   id: "socket",
   type: "parallel",
   context: ({ input }) => ({
-    hooks: input.hooks,
     settings: input.settings,
     transport: input.transport,
     webSocketOpened: false,
@@ -169,13 +169,14 @@ export const socketMachine = setup({
       },
       states: {
         disconnected: {
-          entry: ({ context }) => context.hooks.disconnected(),
+          tags: "closed",
+          entry: emit({ type: "disconnected" }),
           on: { SUSPEND: {} },
         },
         engaged: {
           invoke: {
             src: "watchActivity",
-            input: ({ context }) => ({ activity: context.hooks.activity }),
+            input: ({ context }) => ({ activity: context.settings.activity }),
           },
           initial: "live",
           states: {
@@ -184,21 +185,21 @@ export const socketMachine = setup({
                 id: "transport",
                 src: "transport",
                 input: ({ context }) => ({
-                  transport: context.hooks.transportFor(context.transport),
-                  url: context.hooks.url(),
-                  protocols: context.hooks.protocols(),
-                  binaryType: context.hooks.binaryType,
-                  timeout: context.hooks.longpollerTimeout,
+                  transport: context.settings.transportFor(context.transport),
+                  url: context.settings.url(),
+                  protocols: context.settings.protocols(),
+                  binaryType: context.settings.binaryType,
+                  timeout: context.settings.longpollerTimeout,
                 }),
               },
               initial: "connecting",
               on: {
                 CONNECT: {},
                 TRANSPORT_ERROR: {
-                  actions: ({ context, event }) => context.hooks.errored(event.error),
+                  actions: emit(({ event }) => ({ type: "errored" as const, error: event.error })),
                 },
                 TRANSPORT_MESSAGE: {
-                  actions: ({ context, event }) => context.hooks.message(event.data),
+                  actions: emit(({ event }) => ({ type: "message" as const, data: event.data })),
                 },
                 TRANSPORT_CLOSE: [
                   {
@@ -206,6 +207,7 @@ export const socketMachine = setup({
                     target: "live",
                     reenter: true,
                     actions: [
+                      "loseConnection",
                       {
                         type: "close",
                         params: ({ event }) => closeDetails(event),
@@ -215,15 +217,18 @@ export const socketMachine = setup({
                   },
                   {
                     target: "waitingToReconnect",
-                    actions: {
-                      type: "close",
-                      params: ({ event }) => closeDetails(event),
-                    },
+                    actions: [
+                      "loseConnection",
+                      {
+                        type: "close",
+                        params: ({ event }) => closeDetails(event),
+                      },
+                    ],
                   },
                 ],
                 SUSPEND: {
                   target: "suspended",
-                  actions: { type: "close", params: suspended },
+                  actions: ["loseConnection", { type: "close", params: suspended }],
                 },
                 DISCONNECT: {
                   target: "#socket.connection.disconnected",
@@ -242,6 +247,7 @@ export const socketMachine = setup({
               },
               states: {
                 connecting: {
+                  tags: "connecting",
                   invoke: {
                     src: "sleep",
                     input: ({ context }) => ({
@@ -259,6 +265,7 @@ export const socketMachine = setup({
                   on: { TRANSPORT_OPEN: "open" },
                 },
                 open: {
+                  tags: "open",
                   entry: [
                     assign({
                       tries: 0,
@@ -267,20 +274,14 @@ export const socketMachine = setup({
                       closeWasClean: false,
                       establishedConnections: ({ context }) => context.establishedConnections + 1,
                     }),
-                    ({ context }) => {
-                      for (const message of context.buffer) context.hooks.send(message)
-                    },
+                    enqueueActions(({ context, enqueue }) => {
+                      for (const message of context.buffer) enqueue.emit({ type: "send", message })
+                    }),
                     "dropBuffer",
-                    ({ context }) => context.hooks.opened(),
+                    emit({ type: "opened" }),
                     raise({ type: "CONNECTION_OPENED" }),
                   ],
-                  exit: [
-                    ({ context, event }) => {
-                      if (event.type !== "DISCONNECT" && event.type !== "REPLACE_TRANSPORT")
-                        context.hooks.connectionLost()
-                    },
-                    raise({ type: "CONNECTION_LOST" }),
-                  ],
+                  exit: raise({ type: "CONNECTION_LOST" }),
                   invoke: {
                     src: "sleep",
                     input: ({ context }) => ({
@@ -289,15 +290,21 @@ export const socketMachine = setup({
                     onDone: {
                       target: "#socket.connection.engaged.live",
                       reenter: true,
-                      actions: assign({
-                        transport: "websocket",
-                        fellBack: false,
-                      }),
+                      actions: [
+                        "loseConnection",
+                        assign({
+                          transport: "websocket",
+                          fellBack: false,
+                        }),
+                      ],
                     },
                   },
                   on: {
                     PUSH: {
-                      actions: ({ context, event }) => context.hooks.send(event.message),
+                      actions: emit(({ event }) => ({
+                        type: "send" as const,
+                        message: event.message,
+                      })),
                     },
                     DISCONNECT: {
                       target: "closing",
@@ -329,16 +336,18 @@ export const socketMachine = setup({
                     awaitingHeartbeat: {
                       entry: [
                         assign({
-                          heartbeatRef: ({ context }) => context.hooks.makeRef(),
+                          heartbeatRef: ({ context }) => context.settings.makeRef(),
                         }),
-                        ({ context }) =>
-                          context.hooks.send({
+                        emit(({ context }) => ({
+                          type: "send" as const,
+                          message: {
                             topic: "phoenix",
                             event: "heartbeat",
                             payload: {},
                             ref: context.heartbeatRef,
                             join_ref: null,
-                          }),
+                          },
+                        })),
                       ],
                       invoke: {
                         src: "sleep",
@@ -347,7 +356,7 @@ export const socketMachine = setup({
                         }),
                         onDone: {
                           target: "#socket.connection.engaged.waitingToReconnect",
-                          actions: { type: "close", params: heartbeatTimedOut },
+                          actions: ["loseConnection", { type: "close", params: heartbeatTimedOut }],
                         },
                       },
                       on: { HEARTBEAT_REPLY: "beating" },
@@ -355,6 +364,7 @@ export const socketMachine = setup({
                   },
                 },
                 closing: {
+                  tags: "closing",
                   entry: [
                     "dropBuffer",
                     sendTo("transport", ({ context }) => ({
@@ -393,6 +403,7 @@ export const socketMachine = setup({
               },
             },
             waitingToReconnect: {
+              tags: "closed",
               entry: [
                 assign({ tries: ({ context }) => context.tries + 1 }),
                 raise({ type: "CONNECTION_LOST" }),
@@ -400,13 +411,14 @@ export const socketMachine = setup({
               invoke: {
                 src: "sleep",
                 input: ({ context }) => ({
-                  ms: context.hooks.reconnectAfterMs(context.tries),
+                  ms: context.settings.reconnectAfterMs(context.tries),
                 }),
                 onDone: "live",
               },
               on: { ACTIVITY: { guard: "userIsActive", target: "live" } },
             },
             suspended: {
+              tags: "closed",
               on: { ACTIVITY: { guard: "userIsActive", target: "live" } },
             },
           },

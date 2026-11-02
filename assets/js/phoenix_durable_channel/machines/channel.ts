@@ -1,30 +1,12 @@
-import { assign, enqueueActions, fromCallback, sendTo, setup } from "xstate"
+import { assign, emit, setup } from "xstate"
 import { sleep } from "../actors"
-import { Reader, type MessageStream, type PublishedReader, type StreamMessage } from "../stream"
-import { hasPublishedReader } from "../wire"
+import type { ChannelState } from "../constants"
 
-export interface ChannelHooks {
+export interface ChannelSettings {
   timeout(): number
   socketIsOpen(): boolean
   makeRef(): string
   rejoinAfterMs(tries: number): number
-  sendJoin(joinRef: string | null): void
-  sendLeave(joinRef: string | null, leaveRef: string | null): void
-  answerJoin(status: "ok" | "error" | "timeout", response: unknown): void
-  answerLeave(status: "ok" | "timeout"): void
-  joined(): void
-  durable: boolean
-  streamFor(
-    reader: PublishedReader,
-    latest: () => PublishedReader,
-    refresh: () => Promise<void>,
-  ): MessageStream
-  fetchReader(): Promise<PublishedReader>
-  after: number | null
-  deliver(message: StreamMessage): void
-  connectionLost(): void
-  errored(reason: unknown): void
-  closed(reason: unknown): void
 }
 
 type ChannelEvent =
@@ -33,107 +15,64 @@ type ChannelEvent =
   | { type: "SOCKET_OPEN" }
   | { type: "SOCKET_CLOSED" }
   | { type: "JOIN_REPLY"; status: string; response: unknown }
+  | { type: "JOIN_REFUSED"; response: unknown }
   | { type: "LEAVE_REPLY" }
   | { type: "SERVER_ERROR"; reason: unknown }
   | { type: "SERVER_CLOSE"; reason: unknown }
   | { type: "REPLACED" }
 
+export type ChannelEmitted =
+  | { type: "join"; joinRef: string | null }
+  | { type: "leave"; joinRef: string | null; leaveRef: string | null }
+  | { type: "answerJoin"; status: "ok" | "error" | "timeout"; response: unknown }
+  | { type: "answerLeave"; status: "ok" | "timeout" }
+  | { type: "joined"; response: unknown }
+  | { type: "lost" }
+  | { type: "errored"; reason: unknown }
+  | { type: "closed"; reason: unknown }
+
 interface ChannelContext {
-  hooks: ChannelHooks
+  settings: ChannelSettings
   joinRef: string | null
   leaveRef: string | null
   rejoinTries: number
   joinResponse: unknown
 }
 
-type FollowEvent = { type: "PUBLISHED"; reader: PublishedReader }
-
-const readStream = fromCallback<FollowEvent, { hooks: ChannelHooks; published: PublishedReader }>(
-  ({ input, receive }) => {
-    const { after, deliver, rejoinAfterMs, streamFor, fetchReader } = input.hooks
-    let latest = input.published
-    receive((event) => {
-      latest = event.reader
-    })
-    const refresh = async () => {
-      latest = await fetchReader()
-    }
-    const reader = new Reader(
-      streamFor(input.published, () => latest, refresh),
-      {
-        after: after ?? input.published.last,
-        epoch: input.published.epoch ?? "",
-      },
-      deliver,
-      rejoinAfterMs,
-    )
-    return () => reader.stop()
-  },
-)
-
-export const followMachine = setup({
-  types: {
-    context: {} as { hooks: ChannelHooks; published: PublishedReader },
-    input: {} as { hooks: ChannelHooks },
-    events: {} as FollowEvent,
-  },
-  actors: { readStream },
-}).createMachine({
-  id: "follow",
-  context: ({ input }) => ({
-    hooks: input.hooks,
-    published: { type: "phoenix", last: 0 },
-  }),
-  initial: "waiting",
-  states: {
-    waiting: {
-      on: {
-        PUBLISHED: {
-          target: "reading",
-          actions: assign({ published: ({ event }) => event.reader }),
-        },
-      },
-    },
-    reading: {
-      invoke: {
-        id: "reader",
-        src: "readStream",
-        input: ({ context }) => ({
-          hooks: context.hooks,
-          published: context.published,
-        }),
-      },
-      on: { PUBLISHED: { actions: sendTo("reader", ({ event }) => event) } },
-    },
-  },
-})
-
 export const channelMachine = setup({
   types: {
     context: {} as ChannelContext,
-    input: {} as { hooks: ChannelHooks },
+    input: {} as { settings: ChannelSettings },
     events: {} as ChannelEvent,
+    emitted: {} as ChannelEmitted,
+    tags: {} as ChannelState,
   },
-  actors: { sleep, follow: followMachine },
+  actors: { sleep },
   guards: {
-    socketIsOpen: ({ context }) => context.hooks.socketIsOpen(),
+    socketIsOpen: ({ context }) => context.settings.socketIsOpen(),
     replyIsOk: ({ event }) => event.type === "JOIN_REPLY" && event.status === "ok",
-    nondurable: ({ context, event }) =>
-      event.type === "JOIN_REPLY" &&
-      event.status === "ok" &&
-      context.hooks.durable &&
-      !hasPublishedReader(event.response),
   },
   actions: {
-    lose: ({ context }) => context.hooks.connectionLost(),
-    error: ({ context, event }) =>
-      context.hooks.errored("reason" in event ? event.reason : undefined),
-    answerLeave: ({ context }) => context.hooks.answerLeave("ok"),
+    lose: emit({ type: "lost" }),
+    error: emit(({ event }) => ({
+      type: "errored" as const,
+      reason: "reason" in event ? event.reason : undefined,
+    })),
+    answerJoin: emit((_, params: { status: "ok" | "error" | "timeout"; response: unknown }) => ({
+      type: "answerJoin" as const,
+      ...params,
+    })),
+    answerLeave: emit((_, status: "ok" | "timeout") => ({ type: "answerLeave" as const, status })),
+    leaveJoin: emit(({ context }) => ({
+      type: "leave" as const,
+      joinRef: context.joinRef,
+      leaveRef: context.settings.makeRef(),
+    })),
   },
 }).createMachine({
   id: "channel",
   context: ({ input }) => ({
-    hooks: input.hooks,
+    settings: input.settings,
     joinRef: null,
     leaveRef: null,
     rejoinTries: 0,
@@ -145,20 +84,17 @@ export const channelMachine = setup({
   },
   states: {
     unjoined: {
+      tags: "closed",
       on: {
         JOIN: "member",
-        LEAVE: { target: "closed", actions: "answerLeave" },
+        LEAVE: { target: "closed", actions: { type: "answerLeave", params: "ok" } },
       },
     },
     member: {
-      invoke: {
-        id: "follow",
-        src: "follow",
-        input: ({ context }) => ({ hooks: context.hooks }),
-      },
       initial: "joining",
       states: {
         joining: {
+          tags: "joining",
           initial: "checkingSocket",
           on: {
             LEAVE: "leaving",
@@ -177,50 +113,43 @@ export const channelMachine = setup({
             },
             awaitingReply: {
               entry: [
-                assign({ joinRef: ({ context }) => context.hooks.makeRef() }),
-                ({ context }) => context.hooks.sendJoin(context.joinRef),
+                assign({ joinRef: ({ context }) => context.settings.makeRef() }),
+                emit(({ context }) => ({ type: "join" as const, joinRef: context.joinRef })),
               ],
               invoke: {
                 src: "sleep",
-                input: ({ context }) => ({ ms: context.hooks.timeout() }),
+                input: ({ context }) => ({ ms: context.settings.timeout() }),
                 onDone: {
                   target: "#channel.member.errored",
-                  actions: ({ context }) => {
-                    context.hooks.answerJoin("timeout", undefined)
-                    context.hooks.sendLeave(context.joinRef, context.hooks.makeRef())
-                  },
+                  actions: [
+                    { type: "answerJoin", params: { status: "timeout", response: undefined } },
+                    "leaveJoin",
+                  ],
                 },
               },
               on: {
-                JOIN_REPLY: [
-                  {
-                    guard: "nondurable",
-                    target: "#channel.member.errored",
-                    actions: ({ context }) => {
-                      context.hooks.answerJoin("error", {
-                        reason: "nondurable",
-                      })
-                      context.hooks.sendLeave(context.joinRef, context.hooks.makeRef())
+                JOIN_REFUSED: {
+                  target: "#channel.member.errored",
+                  actions: [
+                    {
+                      type: "answerJoin",
+                      params: ({ event }) => ({ status: "error", response: event.response }),
                     },
-                  },
+                    "leaveJoin",
+                  ],
+                },
+                JOIN_REPLY: [
                   {
                     guard: "replyIsOk",
                     target: "#channel.member.joined",
-                    actions: [
-                      assign({ joinResponse: ({ event }) => event.response }),
-                      enqueueActions(({ event, enqueue }) => {
-                        if (hasPublishedReader(event.response))
-                          enqueue.sendTo("follow", {
-                            type: "PUBLISHED",
-                            reader: event.response.phx_reader,
-                          })
-                      }),
-                    ],
+                    actions: assign({ joinResponse: ({ event }) => event.response }),
                   },
                   {
                     target: "#channel.member.errored",
-                    actions: ({ context, event }) =>
-                      context.hooks.answerJoin("error", event.response),
+                    actions: {
+                      type: "answerJoin",
+                      params: ({ event }) => ({ status: "error", response: event.response }),
+                    },
                   },
                 ],
                 SOCKET_CLOSED: {
@@ -232,10 +161,14 @@ export const channelMachine = setup({
           },
         },
         joined: {
+          tags: "joined",
           entry: [
             assign({ rejoinTries: 0 }),
-            ({ context }) => context.hooks.joined(),
-            ({ context }) => context.hooks.answerJoin("ok", context.joinResponse),
+            emit(({ context }) => ({ type: "joined" as const, response: context.joinResponse })),
+            {
+              type: "answerJoin",
+              params: ({ context }) => ({ status: "ok", response: context.joinResponse }),
+            },
           ],
           on: {
             LEAVE: "leaving",
@@ -245,10 +178,11 @@ export const channelMachine = setup({
           },
         },
         errored: {
+          tags: "errored",
           entry: "lose",
           initial: "checkingSocket",
           on: {
-            LEAVE: { target: "#channel.closed", actions: "answerLeave" },
+            LEAVE: { target: "#channel.closed", actions: { type: "answerLeave", params: "ok" } },
             SOCKET_OPEN: {
               target: "joining",
               actions: assign({ rejoinTries: 0 }),
@@ -266,7 +200,7 @@ export const channelMachine = setup({
               invoke: {
                 src: "sleep",
                 input: ({ context }) => ({
-                  ms: context.hooks.rejoinAfterMs(context.rejoinTries + 1),
+                  ms: context.settings.rejoinAfterMs(context.rejoinTries + 1),
                 }),
                 onDone: {
                   target: "#channel.member.joining",
@@ -280,39 +214,41 @@ export const channelMachine = setup({
           },
         },
         leaving: {
+          tags: "leaving",
           entry: "lose",
           initial: "checkingSocket",
           states: {
             checkingSocket: {
               always: [
                 { guard: "socketIsOpen", target: "awaitingReply" },
-                {
-                  target: "#channel.closed",
-                  actions: ({ context }) => context.hooks.answerLeave("ok"),
-                },
+                { target: "#channel.closed", actions: { type: "answerLeave", params: "ok" } },
               ],
             },
             awaitingReply: {
               entry: [
-                assign({ leaveRef: ({ context }) => context.hooks.makeRef() }),
-                ({ context }) => context.hooks.sendLeave(context.joinRef, context.leaveRef),
+                assign({ leaveRef: ({ context }) => context.settings.makeRef() }),
+                emit(({ context }) => ({
+                  type: "leave" as const,
+                  joinRef: context.joinRef,
+                  leaveRef: context.leaveRef,
+                })),
               ],
               invoke: {
                 src: "sleep",
-                input: ({ context }) => ({ ms: context.hooks.timeout() }),
+                input: ({ context }) => ({ ms: context.settings.timeout() }),
                 onDone: {
                   target: "#channel.closed",
-                  actions: ({ context }) => context.hooks.answerLeave("timeout"),
+                  actions: { type: "answerLeave", params: "timeout" },
                 },
               },
               on: {
                 LEAVE_REPLY: {
                   target: "#channel.closed",
-                  actions: ({ context }) => context.hooks.answerLeave("ok"),
+                  actions: { type: "answerLeave", params: "ok" },
                 },
                 SOCKET_CLOSED: {
                   target: "#channel.closed",
-                  actions: ({ context }) => context.hooks.answerLeave("ok"),
+                  actions: { type: "answerLeave", params: "ok" },
                 },
               },
             },
@@ -321,15 +257,17 @@ export const channelMachine = setup({
       },
     },
     closed: {
+      tags: "closed",
       type: "final",
-      entry: ({ context, event }) =>
-        context.hooks.closed(
+      entry: emit(({ event }) => ({
+        type: "closed" as const,
+        reason:
           event.type === "LEAVE" || event.type === "LEAVE_REPLY"
             ? "leave"
             : "reason" in event
               ? event.reason
               : undefined,
-        ),
+      })),
     },
   },
 })

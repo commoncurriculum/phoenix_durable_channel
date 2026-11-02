@@ -1,5 +1,8 @@
-import { assign, setup } from "xstate"
+import { assign, emit, setup } from "xstate"
 import { sleep } from "../actors"
+
+export type ReplyStatus = "ok" | "error" | "timeout"
+export type PushState = "buffered" | "sent" | ReplyStatus
 
 type PushEvent =
   | { type: "SEND"; ref: string }
@@ -7,13 +10,24 @@ type PushEvent =
   | { type: "CONNECTION_LOST" }
   | { type: "CHANNEL_CLOSED" }
 
+export type PushEmitted = { type: "finished"; status: ReplyStatus; response: unknown }
+
 export const pushMachine = setup({
   types: {
     context: {} as { timeout: number; ref: string | null; response: unknown },
     input: {} as { timeout: number },
     events: {} as PushEvent,
+    emitted: {} as PushEmitted,
+    tags: {} as PushState,
   },
   actors: { sleep },
+  actions: {
+    finish: emit(({ context }, status: ReplyStatus) => ({
+      type: "finished" as const,
+      status,
+      response: context.response,
+    })),
+  },
 }).createMachine({
   id: "push",
   context: ({ input }) => ({
@@ -28,6 +42,7 @@ export const pushMachine = setup({
       on: { CHANNEL_CLOSED: "timeout" },
       states: {
         buffered: {
+          tags: "buffered",
           invoke: {
             src: "sleep",
             input: ({ context }) => ({ ms: context.timeout }),
@@ -41,6 +56,7 @@ export const pushMachine = setup({
           },
         },
         sent: {
+          tags: "sent",
           invoke: {
             src: "sleep",
             input: ({ context }) => ({ ms: context.timeout }),
@@ -63,8 +79,8 @@ export const pushMachine = setup({
         },
       },
     },
-    ok: { type: "final" },
-    error: { type: "final" },
-    timeout: { type: "final" },
+    ok: { type: "final", tags: "ok", entry: { type: "finish", params: "ok" } },
+    error: { type: "final", tags: "error", entry: { type: "finish", params: "error" } },
+    timeout: { type: "final", tags: "timeout", entry: { type: "finish", params: "timeout" } },
   },
 })

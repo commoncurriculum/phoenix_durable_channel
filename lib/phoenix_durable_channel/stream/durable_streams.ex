@@ -4,6 +4,10 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   use GenServer
 
   @table __MODULE__
+  @recent 32
+
+  @impl PhoenixDurableChannel.Stream
+  def delivery, do: :reader
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
@@ -53,9 +57,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   end
 
   def read(topic) do
-    start = kept(topic) || create(topic)
-    {offset, last} = read_to_end(topic, start.offset, start.last)
-    kept = %{given: last, offset: offset, last: last}
+    kept = read_to_end(topic, kept(topic) || create(topic))
     :ets.insert(@table, {topic, kept})
     kept
   end
@@ -68,27 +70,29 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
       ]
     )
 
-    %{given: 0, offset: "-1", last: 0}
+    %{given: 0, offset: "-1", last: 0, recent: %{}}
   end
 
-  def read_to_end(topic, offset, last) do
+  def read_to_end(topic, kept) do
     response =
       Req.get!(url(topic),
-        params: [offset: offset],
+        params: [offset: kept.offset],
         headers: [authorization: "Bearer " <> token("read", topic)],
         decode_body: false
       )
 
-    last =
-      response.body
-      |> Jason.decode!()
-      |> Enum.reduce(last, fn message, _last -> message["number"] end)
-
+    read = response.body |> Jason.decode!() |> Enum.reduce(kept, &keep/2)
     [next_offset] = Req.Response.get_header(response, "stream-next-offset")
+    read = %{read | offset: next_offset, given: read.last}
 
     if Req.Response.get_header(response, "stream-up-to-date") == ["true"],
-      do: {next_offset, last},
-      else: read_to_end(topic, next_offset, last)
+      do: read,
+      else: read_to_end(topic, read)
+  end
+
+  def keep(%{"number" => number, "payload" => payload}, kept) do
+    recent = kept.recent |> Map.put(number, payload) |> Map.delete(number - @recent)
+    %{kept | last: max(kept.last, number), recent: recent}
   end
 
   def replies(topic), do: topic <> "/replies"
@@ -99,13 +103,25 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   @impl PhoenixDurableChannel.Ledger
   def put_received(socket, number, {status, response}) do
     topic = replies(socket.topic)
-    kept(topic) || read(topic)
+    kept = kept(topic) || read(topic)
     post(topic, number, "reply", %{status: status, response: response})
+    payload = %{"status" => Atom.to_string(status), "response" => response}
+    :ets.insert(@table, {topic, keep(%{"number" => number, "payload" => payload}, kept)})
     :ok
   end
 
   @impl PhoenixDurableChannel.Ledger
-  def reply(socket, number), do: find(replies(socket.topic), "-1", number)
+  def reply(socket, number) do
+    topic = replies(socket.topic)
+
+    case Map.fetch((kept(topic) || read(topic)).recent, number) do
+      {:ok, %{"status" => status, "response" => response}} ->
+        {String.to_existing_atom(status), response}
+
+      :error ->
+        find(topic, "-1", number)
+    end
+  end
 
   def find(topic, offset, number) do
     response =

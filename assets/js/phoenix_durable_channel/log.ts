@@ -1,27 +1,35 @@
 import { createReactive } from "@supergrain/kernel"
 import type { Actor } from "xstate"
 import { startMachine } from "./actors"
-import { logMachine, type LogHooks } from "./machines/log"
+import { logMachine, type LogSettings, type SentEntry } from "./machines/log"
 import type { Reply } from "./reply"
+
+export interface LogChannel {
+  sync(): void
+  send(entry: SentEntry): void
+}
 
 export class Log {
   readonly status: { pending: number }
   readonly actor: Actor<typeof logMachine>
 
-  constructor(channel: Omit<LogHooks, "answer">) {
+  constructor(settings: LogSettings, channel: LogChannel) {
     this.status = createReactive({ pending: 0 })
     this.actor = startMachine(
       logMachine,
-      (later) => ({
-        hooks: {
-          ...channel,
-          sync: () => later(() => channel.sync()),
-          send: (entry) => later(() => channel.send(entry)),
-          answer: (entry, status, response) => later(() => entry.reply.answer(status, response)),
-        },
-      }),
+      { settings },
       (snapshot) => {
         this.status.pending = snapshot.context.queue.length
+      },
+      (event) => {
+        switch (event.type) {
+          case "sync":
+            return channel.sync()
+          case "send":
+            return channel.send(event.entry)
+          case "answer":
+            return event.entry.reply.answer(event.status, event.response)
+        }
       },
     )
   }

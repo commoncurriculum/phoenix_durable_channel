@@ -186,7 +186,7 @@ end
 
 - `use PhoenixDurableChannel.Channel` comes after `use Phoenix.Channel`. It wraps your `join/3`, `handle_in/3` and `handle_info/2`; your functions stay as they are.
 - `push/3` stays fire and forget. `push_durable/3` is the durable one.
-- `handle_in/3` sees a durable message's plain payload, and `socket.assigns.phx_number` is its number. It answers with what Phoenix allows (`{:reply, ...}`, `{:noreply, socket}` meaning `:ok`), or `{:retry, reason, socket}` for a message it can't take now. A handler that raises answers `{:error, %{reason: "crashed"}}` and is not run again.
+- `handle_in/3` sees a durable message's plain payload, and `socket.assigns.phx_number` is its number. It answers with what Phoenix allows (`{:reply, ...}`, `{:noreply, socket}` meaning `:ok`, `{:stop, reason, reply, socket}`, `{:stop, reason, socket}` meaning `:ok`), or `{:retry, reason, socket}` for a message it can't take now. A stop's reply is recorded before the process stops. A handler that raises answers `{:error, %{reason: "crashed"}}` and is not run again.
 - **A handler must be safe to run twice.** A message runs once unless its process dies between running it and the ledger's record; then the client's resend runs it again.
 - `ledger:` and `stream:` are read on every call, so they can come from runtime config. Define `durable_ledger/1` or `durable_stream/1` to pick per socket.
 - Only what was appended is kept. Above, a broadcast while no process of the client's channel is subscribed (the client is offline) is not appended, so the client reloads the room after a rejoin, as it would today.
@@ -239,6 +239,7 @@ The two directions are separate.
 **The client's durable pushes:**
 
 - After every join the client sends `phx_sync`, and the server replies `{received}`, the last number its ledger recorded.
+- The server reads `received` from the ledger once, at the join, and counts on from it in the channel's assigns: the join makes its process the only one taking the client's pushes. A ledger reset while the process runs is noticed at the next join.
 - The client numbers its pushes on from there, sends them in order, and sends them again after every rejoin until answered. The server answers one it already handled with the reply its ledger kept.
 - A push the server can't take now (`{:retry, reason, socket}`) is sent again, with the ones after it, after a backoff.
 - At most 32 are unanswered at once, and the ledger keeps the last 32 replies or more, so a resend always finds its reply.
@@ -264,14 +265,16 @@ Two behaviours, and each store implements both:
 | `DurableStreams` | a Durable Streams stream per topic; replies in `<topic>/replies`                          | `{type: "durable-streams", url, token, last, offset}` |
 | `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart                  | `{type: "phoenix", last, epoch}`                      |
 
-**Read through the channel** (`Mongo`, `Memory`, or your own `PhoenixDurableChannel.Stream.ThroughChannel`):
+A stream's `delivery/0` says how its messages reach the client: `:channel` or `:reader`.
+
+**Read through the channel** (`delivery/0` is `:channel`: `Mongo`, `Memory`, or your own `PhoenixDurableChannel.Stream.ThroughChannel`):
 
 - `push_durable/3` pushes each message with its number, and `since/3` answers the client's `phx_read {after}` a page at a time.
 - The server resends what it kept after `after`, then replies `{sent, epoch}`. Until that reply the client holds what arrives; after it, each message must be the next one, and one that isn't ends the read, as losing the connection does. The client reads again from the last message it delivered.
 - The read has no timeout: a server still paging is still sending.
 - The epoch names one numbering of the stream. A reply in another epoch ends the read, and the client reads that epoch from where it last got to in it, or from the start.
 
-**Read from the store's own protocol** (`S2`, `DurableStreams`):
+**Read from the store's own protocol** (`delivery/0` is `:reader`: `S2`, `DurableStreams`):
 
 - Each topic is one stream of the same name, and each token reads only that stream. A store that refuses the token (401 or 403) makes the client ask the channel for a fresh reader (`phx_reader`) and read again.
 - S2 record `seq_num` n is message n + 1.
@@ -301,6 +304,8 @@ npx jest -c phoenix_js_test/jest.config.cjs -i
 `mix test` runs Phoenix 1.8.16's channel tests (`test/phoenix/integration`, `test/phoenix/test/channel_test.exs`) and its V2 serializer test, as Phoenix ships them, with three changes: each test channel adds `use PhoenixDurableChannel.Channel`, each test endpoint's socket uses `PhoenixDurableChannel.Serializer` for vsn 2.0.0, and the log assertion names that serializer. When Phoenix releases, copy its files over and make the same three changes; `diff` against Phoenix's tag shows exactly them.
 
 `phoenix_js_test/` runs Phoenix 1.8.16's `assets/test` against this client, through `phoenix_js_test/js/phoenix`, which re-exports it. Most of those tests reach into phoenix.js's private members (`socket.conn`, `channel.joinPush`, `trigger()`, its timers and transport handlers), which this client does not have. `phoenix_js_test/internals.json` lists each such test with what it reaches into. The run fails if any other test fails, or if a listed test starts passing. `PHOENIX_JS_TEST_RECORD=1` rewrites the list, keeping the reasons already written; a new entry needs its reason written by hand.
+
+`pnpm lint` type checks and fails on any comment in the TypeScript and JavaScript, and `mix test` fails on any comment in the Elixir, outside Phoenix's vendored tests: what the code must do goes in a test.
 
 The tests in `integration_test/` run the client in Chromium against `integration_test/phoenix_app`, a Phoenix 1.8.16 app on this library, with MongoDB, S2 Lite and the `durable-streams-cloudflare` worker on wrangler. `integration_test/support/phoenix-server.ts` starts them all; it needs Elixir and the `s2` CLI from mise. Coverage of `assets/js` must stay at 100%.
 

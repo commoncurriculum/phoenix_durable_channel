@@ -6,4 +6,6 @@ defmodule PhoenixDurableChannel.Stream do
               required(:type) => String.t(),
               required(:last) => non_neg_integer()
             }
+
+  @callback delivery() :: :channel | :reader
 end

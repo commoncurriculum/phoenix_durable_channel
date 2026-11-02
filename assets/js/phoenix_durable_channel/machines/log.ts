@@ -1,4 +1,4 @@
-import { assign, setup } from "xstate"
+import { assign, emit, enqueueActions, setup } from "xstate"
 import { sleep } from "../actors"
 import { DURABLE_WINDOW } from "../constants"
 import type { Reply } from "../reply"
@@ -23,17 +23,19 @@ type LogEvent =
   | { type: "SYNCED"; received: number }
   | { type: "SYNC_FAILED" }
 
-export interface LogHooks {
+export type LogEmitted =
+  | { type: "sync" }
+  | { type: "send"; entry: SentEntry }
+  | { type: "answer"; entry: Entry; status: "ok" | "error" | "timeout"; response: unknown }
+
+export interface LogSettings {
   channelJoined(): boolean
   backoffMs(tries: number): number
   makeRef(): string
-  sync(): void
-  send(entry: SentEntry): void
-  answer(entry: Entry, status: "ok" | "error" | "timeout", response: unknown): void
 }
 
 export interface LogContext {
-  hooks: LogHooks
+  settings: LogSettings
   queue: Array<Entry>
   next: number
   tries: number
@@ -46,28 +48,35 @@ const isOurs = (context: LogContext, event: ReplyEvent) =>
 
 const notTaken = (event: ReplyEvent) => event.status === "error" && isNotTaken(event.response)
 
-function sendWaiting(hooks: LogHooks, queue: Array<Entry>, next: number) {
-  let number = next
-  let inFlight = queue.filter((entry) => entry.ref !== null).length
-  const sent = queue.map((entry) => {
-    if (entry.ref !== null || inFlight >= DURABLE_WINDOW) return entry
-    inFlight++
-    const sending = { ...entry, number: number++, ref: hooks.makeRef() }
-    hooks.send(sending)
-    return sending
-  })
-  return { queue: sent, next: number }
+function numberWaiting(
+  queue: Array<Entry>,
+  next: number,
+  makeRef: () => string,
+): { queue: Array<Entry>; next: number; sending: Array<SentEntry> } {
+  const inFlight = queue.findIndex((entry) => entry.ref === null)
+  if (inFlight === -1 || inFlight >= DURABLE_WINDOW) return { queue, next, sending: [] }
+  const sending = queue.slice(inFlight, DURABLE_WINDOW).map((entry, index) => ({
+    ...entry,
+    number: next + index,
+    ref: makeRef(),
+  }))
+  return {
+    queue: [...queue.slice(0, inFlight), ...sending, ...queue.slice(inFlight + sending.length)],
+    next: next + sending.length,
+    sending,
+  }
 }
 
 export const logMachine = setup({
   types: {
     context: {} as LogContext,
-    input: {} as { hooks: LogHooks },
+    input: {} as { settings: LogSettings },
     events: {} as LogEvent,
+    emitted: {} as LogEmitted,
   },
   actors: { sleep },
   guards: {
-    channelJoined: ({ context }) => context.hooks.channelJoined(),
+    channelJoined: ({ context }) => context.settings.channelJoined(),
     notTaken: ({ context, event }) =>
       event.type === "REPLY" && isOurs(context, event) && notTaken(event),
   },
@@ -75,33 +84,46 @@ export const logMachine = setup({
     enqueue: assign(({ context }, entry: Entry) => ({
       queue: [...context.queue, entry],
     })),
-    sendWaiting: assign(({ context }) => sendWaiting(context.hooks, context.queue, context.next)),
-    answer: assign(({ context }, event: ReplyEvent) => {
-      if (notTaken(event)) return {}
+    sendWaiting: enqueueActions(({ context, enqueue }) => {
+      const { queue, next, sending } = numberWaiting(
+        context.queue,
+        context.next,
+        context.settings.makeRef,
+      )
+      enqueue.assign({ queue, next })
+      for (const entry of sending) enqueue.emit({ type: "send", entry })
+    }),
+    answer: enqueueActions(({ context, enqueue }, event: ReplyEvent) => {
+      if (notTaken(event)) return
       for (const entry of context.queue.filter((entry) => entry.ref === event.ref))
-        context.hooks.answer(entry, event.status === "ok" ? "ok" : "error", event.response)
-      return {
-        queue: context.queue.filter((entry) => entry.ref !== event.ref),
-      }
+        enqueue.emit({
+          type: "answer",
+          entry,
+          status: event.status === "ok" ? "ok" : "error",
+          response: event.response,
+        })
+      enqueue.assign({ queue: context.queue.filter((entry) => entry.ref !== event.ref) })
     }),
-    sync: ({ context }) => context.hooks.sync(),
-    applySync: assign(({ context }, received: number) => {
-      const next = Math.min(context.queue[0]?.number ?? received + 1, received + 1)
-      const waiting = context.queue.map((entry) => ({
-        ...entry,
-        number: null,
-        ref: null,
-      }))
-      return { ...sendWaiting(context.hooks, waiting, next), tries: 0 }
+    sync: emit({ type: "sync" }),
+    applySync: enqueueActions(({ context, enqueue }, received: number) => {
+      const unsent = context.queue.map((entry) => ({ ...entry, number: null, ref: null }))
+      const { queue, next, sending } = numberWaiting(
+        unsent,
+        Math.min(context.queue[0]?.number ?? received + 1, received + 1),
+        context.settings.makeRef,
+      )
+      enqueue.assign({ queue, next, tries: 0 })
+      for (const entry of sending) enqueue.emit({ type: "send", entry })
     }),
-    abandon: ({ context }) => {
-      for (const entry of context.queue) context.hooks.answer(entry, "timeout", undefined)
-    },
+    abandon: enqueueActions(({ context, enqueue }) => {
+      for (const entry of context.queue)
+        enqueue.emit({ type: "answer", entry, status: "timeout", response: undefined })
+    }),
   },
 }).createMachine({
   id: "log",
   context: ({ input }) => ({
-    hooks: input.hooks,
+    settings: input.settings,
     queue: [],
     next: 0,
     tries: 0,
@@ -132,7 +154,7 @@ export const logMachine = setup({
       invoke: {
         src: "sleep",
         input: ({ context }) => ({
-          ms: context.hooks.backoffMs(context.tries),
+          ms: context.settings.backoffMs(context.tries),
         }),
         onDone: "syncing",
       },

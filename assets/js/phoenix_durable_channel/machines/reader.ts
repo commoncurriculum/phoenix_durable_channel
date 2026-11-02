@@ -1,4 +1,4 @@
-import { assign, fromCallback, setup } from "xstate"
+import { assign, enqueueActions, fromCallback, setup } from "xstate"
 import { sleep } from "../actors"
 import type { MessageStream, Position, StreamMessage } from "../stream"
 
@@ -7,6 +7,8 @@ type ReaderEvent =
   | { type: "MOVED"; epoch: string }
   | { type: "FAILED" }
   | { type: "STOP" }
+
+export type ReaderEmitted = { type: "deliver"; message: StreamMessage }
 
 const reading = fromCallback<ReaderEvent, { stream: MessageStream; from: Position }, ReaderEvent>(
   ({ input, sendBack }) =>
@@ -19,7 +21,6 @@ const reading = fromCallback<ReaderEvent, { stream: MessageStream; from: Positio
 
 export interface ReaderContext {
   stream: MessageStream
-  deliver(message: StreamMessage): void
   backoffMs(tries: number): number
   from: Position
   left: ReadonlyMap<string, number>
@@ -31,6 +32,7 @@ export const readerMachine = setup({
     context: {} as ReaderContext,
     input: {} as Omit<ReaderContext, "tries" | "left">,
     events: {} as ReaderEvent,
+    emitted: {} as ReaderEmitted,
   },
   actors: { reading, sleep },
 }).createMachine({
@@ -49,12 +51,12 @@ export const readerMachine = setup({
       },
       on: {
         MESSAGE: {
-          actions: assign(({ context, event }) => {
-            context.deliver(event.message)
-            return {
+          actions: enqueueActions(({ context, event, enqueue }) => {
+            enqueue.emit({ type: "deliver", message: event.message })
+            enqueue.assign({
               from: { ...context.from, after: event.message.number },
               tries: 0,
-            }
+            })
           }),
         },
         MOVED: {

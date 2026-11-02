@@ -76,11 +76,12 @@ defmodule PhoenixDurableChannel.Channel do
           PhoenixDurableChannel.Channel.join(
             super(topic, params, socket),
             params,
+            &durable_ledger/1,
             &durable_stream/1
           )
 
       def handle_in("phx_sync", _payload, socket),
-        do: PhoenixDurableChannel.Channel.sync(durable_ledger(socket), socket)
+        do: PhoenixDurableChannel.Channel.sync(socket)
 
       def handle_in("phx_read", %{"after" => last}, socket),
         do: PhoenixDurableChannel.Channel.read(durable_stream(socket), last, socket)
@@ -94,16 +95,23 @@ defmodule PhoenixDurableChannel.Channel do
     end
   end
 
-  def join({:ok, socket}, %{"phx_durable" => true} = params, stream_for),
-    do: join({:ok, %{}, socket}, params, stream_for)
+  def join({:ok, socket}, %{"phx_durable" => true} = params, ledger_for, stream_for),
+    do: join({:ok, %{}, socket}, params, ledger_for, stream_for)
 
-  def join({:ok, reply, socket}, %{"phx_durable" => true}, stream_for) when is_map(reply) do
+  def join({:ok, reply, socket}, %{"phx_durable" => true}, ledger_for, stream_for)
+      when is_map(reply) do
     replace(socket.topic)
-    socket = Phoenix.Socket.assign(socket, :phx_durable, true)
+
+    socket =
+      Phoenix.Socket.assign(socket,
+        phx_durable: true,
+        phx_received: ledger_for.(socket).received(socket)
+      )
+
     {:ok, Map.put(reply, :phx_reader, stream_for.(socket).reader(socket)), socket}
   end
 
-  def join(result, _params, _stream_for), do: result
+  def join(result, _params, _ledger_for, _stream_for), do: result
 
   def replace(topic) do
     name = {__MODULE__, topic}
@@ -152,20 +160,13 @@ defmodule PhoenixDurableChannel.Channel do
   def push_durable(stream, socket, event, payload) do
     number = stream.append(socket, event, payload)
 
-    if through_channel?(stream),
+    if stream.delivery() == :channel,
       do: Phoenix.Channel.push(socket, event, {:durable, number, payload})
 
     :ok
   end
 
-  def through_channel?(stream) do
-    behaviours =
-      stream.module_info(:attributes) |> Keyword.get_values(:behaviour) |> Enum.concat()
-
-    PhoenixDurableChannel.Stream.ThroughChannel in behaviours
-  end
-
-  def sync(ledger, socket), do: {:reply, {:ok, %{received: ledger.received(socket)}}, socket}
+  def sync(socket), do: {:reply, {:ok, %{received: socket.assigns.phx_received}}, socket}
 
   def read(stream, last, socket) do
     page = stream.since(socket, last, @page)
@@ -180,7 +181,7 @@ defmodule PhoenixDurableChannel.Channel do
   end
 
   def handle_durable(ledger, number, socket, handle_in) do
-    received = ledger.received(socket)
+    received = socket.assigns.phx_received
 
     cond do
       number <= received ->
@@ -191,17 +192,30 @@ defmodule PhoenixDurableChannel.Channel do
 
       true ->
         case run(handle_in, Phoenix.Socket.assign(socket, :phx_number, number)) do
-          {:retry, reason, socket} -> {:reply, {:error, %{phx_not_taken: reason}}, socket}
-          {:noreply, socket} -> record(ledger, number, {:ok, %{}}, socket)
-          {:reply, :ok, socket} -> record(ledger, number, {:ok, %{}}, socket)
-          {:reply, reply, socket} -> record(ledger, number, reply, socket)
+          {:retry, reason, socket} ->
+            {:reply, {:error, %{phx_not_taken: reason}}, socket}
+
+          {:noreply, socket} ->
+            {:reply, {:ok, %{}}, record(ledger, number, {:ok, %{}}, socket)}
+
+          {:reply, reply, socket} ->
+            {:reply, answer(reply), record(ledger, number, answer(reply), socket)}
+
+          {:stop, reason, socket} ->
+            {:stop, reason, {:ok, %{}}, record(ledger, number, {:ok, %{}}, socket)}
+
+          {:stop, reason, reply, socket} ->
+            {:stop, reason, answer(reply), record(ledger, number, answer(reply), socket)}
         end
     end
   end
 
+  def answer(status) when is_atom(status), do: {status, %{}}
+  def answer(reply), do: reply
+
   def record(ledger, number, reply, socket) do
     :ok = ledger.put_received(socket, number, reply)
-    {:reply, reply, socket}
+    Phoenix.Socket.assign(socket, :phx_received, number)
   end
 
   def run(handle_in, socket) do

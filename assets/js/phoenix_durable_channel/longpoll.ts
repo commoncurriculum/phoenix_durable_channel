@@ -1,7 +1,7 @@
 import type { Actor } from "xstate"
-import { ignore, startMachine, type TransportConnection } from "./actors"
-import { AUTH_TOKEN_PREFIX, SOCKET_STATES, TRANSPORTS } from "./constants"
-import { longPollMachine } from "./machines/longpoll"
+import { ignore, startMachine, tagged, type TransportConnection } from "./actors"
+import { AUTH_TOKEN_PREFIX, SOCKET_STATES, TRANSPORTS, decodeConnectionState } from "./constants"
+import { longPollMachine, type LongPollEmitted } from "./machines/longpoll"
 
 const DEFAULT_LONGPOLL_TIMEOUT = 20_000
 
@@ -17,27 +17,25 @@ export class LongPoll implements TransportConnection {
   constructor(endPoint: string, protocols?: Array<string>) {
     const [, bearer] = protocols ?? []
     const authToken = bearer === undefined ? null : atob(bearer.slice(AUTH_TOKEN_PREFIX.length))
-    this.actor = startMachine(longPollMachine, (later) => ({
-      hooks: {
-        authToken,
-        endpoint: endPoint
-          .replace("ws://", "http://")
-          .replace("wss://", "https://")
-          .replace(new RegExp(`(.*)/${TRANSPORTS.websocket}`), `$1/${TRANSPORTS.longpoll}`),
-        timeout: () => this.timeout,
-        opened: () => later(() => this.onopen({})),
-        message: (data) => later(() => this.onmessage({ data })),
-        errored: (error) => later(() => this.onerror(error)),
-        closed: (details) => later(() => this.onclose(details)),
+    this.actor = startMachine(
+      longPollMachine,
+      {
+        settings: {
+          authToken,
+          endpoint: endPoint
+            .replace("ws://", "http://")
+            .replace("wss://", "https://")
+            .replace(new RegExp(`(.*)/${TRANSPORTS.websocket}`), `$1/${TRANSPORTS.longpoll}`),
+          timeout: () => this.timeout,
+        },
       },
-    }))
+      ignore,
+      (event) => this.handle(event),
+    )
   }
 
   get readyState(): number {
-    const snapshot = this.actor.getSnapshot()
-    if (snapshot.status === "done") return SOCKET_STATES.closed
-    if (snapshot.matches({ running: { polling: { open: "polling" } } })) return SOCKET_STATES.open
-    return SOCKET_STATES.connecting
+    return SOCKET_STATES[tagged(this.actor.getSnapshot(), decodeConnectionState)]
   }
 
   send(body: string | ArrayBuffer): void {
@@ -49,6 +47,19 @@ export class LongPoll implements TransportConnection {
 
   close(code = 1000, reason = "", wasClean = true): void {
     this.actor.send({ type: "CLOSE", code, reason, wasClean })
+  }
+
+  private handle(event: LongPollEmitted): void {
+    switch (event.type) {
+      case "opened":
+        return this.onopen({})
+      case "message":
+        return this.onmessage({ data: event.data })
+      case "errored":
+        return this.onerror(event.error)
+      case "closed":
+        return this.onclose({ code: event.code, reason: event.reason, wasClean: event.wasClean })
+    }
   }
 }
 

@@ -72,6 +72,7 @@ noResend CatchesUp PROPERTY
 historicIsOk AnsweredAsHandled INVARIANT
 retryIsAnswer OnlyTakenAreAnswered INVARIANT
 unmatchedIsAnswer OnlyTakenAreAnswered INVARIANT
+staleCount HandledOnceUnlessCrashed INVARIANT
 EOF
 
 check ChannelRead "  NodeCount = 2

@@ -12,6 +12,7 @@ VARIABLES
     answers,
     pushes,
     received,
+    known,
     replies,
     handled,
     toServer,
@@ -24,11 +25,11 @@ VARIABLES
     forgotten,
     faults
 
-vars == <<up, phase, queue, next, syncId, answers, pushes, received, replies, handled,
+vars == <<up, phase, queue, next, syncId, answers, pushes, received, known, replies, handled,
           toServer, toClient, running, oldBox, oldRunning, gone, crashes, forgotten, faults>>
 
 clientVars == <<phase, queue, next, syncId, answers, pushes>>
-ledgerVars == <<received, replies, handled, forgotten>>
+ledgerVars == <<received, known, replies, handled, forgotten>>
 oldVars == <<oldBox, oldRunning, gone>>
 
 Init ==
@@ -40,6 +41,7 @@ Init ==
     /\ answers = <<>>
     /\ pushes = 0
     /\ received = 0
+    /\ known = 0
     /\ replies = <<>>
     /\ handled = <<>>
     /\ toServer = <<>>
@@ -78,7 +80,9 @@ Joins ==
     /\ syncId' = syncId + 1
     /\ toServer' = <<[k |-> "sync", sid |-> syncId + 1]>>
     /\ gone' = FALSE
-    /\ UNCHANGED <<queue, next, answers, pushes, ledgerVars, toClient, running, oldBox,
+    /\ known' = IF Broken = "staleCount" THEN known ELSE received
+    /\ UNCHANGED <<queue, next, answers, pushes, received, replies, handled, forgotten,
+                   toClient, running, oldBox,
                    oldRunning, crashes, faults>>
 
 ReplaceKills ==
@@ -199,6 +203,7 @@ Historic(num) == IF Broken = "historicIsOk" THEN "ok" ELSE replies[num]
 Begins(m, status) ==
     /\ handled' = Append(handled, [id |-> m.id, status |-> status])
     /\ received' = IF Broken = "countBeforeRecord" THEN m.num ELSE received
+    /\ known' = known
 
 Records(r) ==
     /\ received' = Max(received, r.num)
@@ -213,20 +218,20 @@ ServerTakes ==
     /\ LET m == Head(toServer)
        IN IF m.k = "sync"
           THEN /\ toClient' = Append(toClient,
-                                     [k |-> "syncReply", received |-> received, sid |-> m.sid])
+                                     [k |-> "syncReply", received |-> known, sid |-> m.sid])
                /\ UNCHANGED <<ledgerVars, running>>
-          ELSE IF m.num = received + 1 \/ (Broken = "noDedupe" /\ m.num <= received)
+          ELSE IF m.num = known + 1 \/ (Broken = "noDedupe" /\ m.num <= known)
           THEN \E status \in {"ok", "error"} :
                   /\ Begins(m, status)
                   /\ running' = <<[id |-> m.id, num |-> m.num, status |-> status]>>
                   /\ UNCHANGED <<replies, forgotten, toClient>>
-          ELSE IF m.num > received
+          ELSE IF m.num > known
           THEN /\ toClient' = Append(toClient, [k |-> "answer", id |-> m.id, status |-> "notTaken"])
                /\ UNCHANGED <<ledgerVars, running>>
           ELSE IF m.num <= received - Kept \/ m.num > Len(replies)
           THEN /\ forgotten' = TRUE
                /\ toClient' = Append(toClient, [k |-> "answer", id |-> m.id, status |-> "ok"])
-               /\ UNCHANGED <<received, replies, handled, running>>
+               /\ UNCHANGED <<received, known, replies, handled, running>>
           ELSE /\ toClient' = Append(toClient,
                                      [k |-> "answer", id |-> m.id, status |-> Historic(m.num)])
                /\ UNCHANGED <<ledgerVars, running>>
@@ -235,6 +240,7 @@ ServerTakes ==
 ServerRecords ==
     /\ running # <<>>
     /\ Records(running[1])
+    /\ known' = running[1].num
     /\ running' = <<>>
     /\ toClient' = Append(toClient, [k |-> "answer", id |-> running[1].id,
                                      status |-> running[1].status])
@@ -246,7 +252,7 @@ ServerCannotTake ==
     /\ running = <<>>
     /\ toServer # <<>>
     /\ Head(toServer).k = "push"
-    /\ Head(toServer).num = received + 1
+    /\ Head(toServer).num = known + 1
     /\ faults' = faults + 1
     /\ toServer' = Tail(toServer)
     /\ toClient' = Append(toClient, [k |-> "answer", id |-> Head(toServer).id, status |-> "notTaken"])
@@ -268,6 +274,7 @@ OldTakes ==
 OldRecords ==
     /\ oldRunning # <<>>
     /\ Records(oldRunning[1])
+    /\ known' = known
     /\ oldRunning' = <<>>
     /\ UNCHANGED <<up, clientVars, handled, forgotten, toServer, toClient, running, oldBox,
                    gone, crashes, faults>>

@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { execFileSync, spawn, type ChildProcess } from "node:child_process"
-import { mkdtempSync, openSync } from "node:fs"
+import { mkdirSync, openSync, rmSync } from "node:fs"
 import { connect } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -100,7 +100,9 @@ function listening(port: number): Promise<boolean> {
 
 async function startMongo() {
   if (await listening(MONGO_PORT)) return
-  const directory = mkdtempSync(join(tmpdir(), "phoenix-durable-channel-mongo-"))
+  const directory = join(tmpdir(), "phoenix-durable-channel-mongo")
+  rmSync(directory, { recursive: true, force: true })
+  mkdirSync(directory)
   mongo = spawn(
     "mongod",
     ["--port", `${MONGO_PORT}`, "--bind_ip", "127.0.0.1", "--dbpath", directory],

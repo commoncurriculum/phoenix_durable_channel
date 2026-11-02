@@ -1,19 +1,11 @@
 import { createReactive } from "@supergrain/kernel"
-import type { Actor, SnapshotFrom } from "xstate"
-import { startMachine } from "./actors"
-import { pushMachine } from "./machines/push"
+import type { Actor } from "xstate"
+import { startMachine, tagged } from "./actors"
+import { decodePushState } from "./constants"
+import { pushMachine, type PushState, type ReplyStatus } from "./machines/push"
 import { Reply } from "./reply"
 
-export type ReplyStatus = "ok" | "error" | "timeout"
-export type PushState = "buffered" | "sent" | ReplyStatus
-
-function pushState(snapshot: SnapshotFrom<typeof pushMachine>): PushState {
-  if (snapshot.matches({ pending: "sent" })) return "sent"
-  if (snapshot.matches("pending")) return "buffered"
-  if (snapshot.matches("ok")) return "ok"
-  if (snapshot.matches("error")) return "error"
-  return "timeout"
-}
+export type { PushState, ReplyStatus }
 
 export class Push {
   readonly status: { state: PushState }
@@ -22,21 +14,20 @@ export class Push {
 
   constructor(
     readonly event: string,
-    readonly payload: () => unknown,
+    readonly payload: unknown,
     timeout: number,
     onFinish: (push: Push) => void,
   ) {
     this.status = createReactive<{ state: PushState }>({ state: "buffered" })
     this.actor = startMachine(
       pushMachine,
-      () => ({ timeout }),
+      { timeout },
       (snapshot) => {
-        const state = pushState(snapshot)
-        if (state === this.status.state) return
-        this.status.state = state
-        if (state === "buffered" || state === "sent") return
+        this.status.state = tagged(snapshot, decodePushState)
+      },
+      ({ status, response }) => {
         onFinish(this)
-        this.reply.answer(state, snapshot.context.response)
+        this.reply.answer(status, response)
       },
     )
   }

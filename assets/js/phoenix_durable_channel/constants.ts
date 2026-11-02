@@ -1,3 +1,5 @@
+import { Schema } from "effect"
+
 export const DEFAULT_VSN = "2.0.0"
 export const DEFAULT_TIMEOUT = 10_000
 export const AUTH_TOKEN_PREFIX = "base64url.bearer.phx."
@@ -9,6 +11,8 @@ export const SOCKET_STATES = {
   closed: 3,
 } as const
 
+export type ConnectionState = keyof typeof SOCKET_STATES
+
 export const CHANNEL_STATES = {
   closed: "closed",
   errored: "errored",
@@ -18,6 +22,18 @@ export const CHANNEL_STATES = {
 } as const
 
 export type ChannelState = (typeof CHANNEL_STATES)[keyof typeof CHANNEL_STATES]
+
+export const decodeConnectionState = Schema.decodeUnknownSync(
+  Schema.Literal("connecting", "open", "closing", "closed"),
+)
+
+export const decodeChannelState = Schema.decodeUnknownSync(
+  Schema.Literal("closed", "errored", "joined", "joining", "leaving"),
+)
+
+export const decodePushState = Schema.decodeUnknownSync(
+  Schema.Literal("buffered", "sent", "ok", "error", "timeout"),
+)
 
 export const CHANNEL_EVENTS = {
   close: "phx_close",

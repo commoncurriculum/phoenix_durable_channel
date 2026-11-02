@@ -3,6 +3,9 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   @behaviour PhoenixDurableChannel.Stream
 
   @impl PhoenixDurableChannel.Stream
+  def delivery, do: :reader
+
+  @impl PhoenixDurableChannel.Stream
   def append(socket, event, payload) do
     record = %S2.V1.AppendRecord{body: Jason.encode!(%{event: event, payload: payload})}
 

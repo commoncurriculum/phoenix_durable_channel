@@ -237,6 +237,9 @@ defmodule TestServer.Ledger do
   def get(topic), do: Agent.get(__MODULE__, &Map.get(&1, topic, @empty))
 
   @impl true
+  def delivery, do: :channel
+
+  @impl true
   def append(socket, event, payload) do
     update(socket.topic, fn ledger ->
       number = length(ledger.sent) + 1
@@ -263,13 +266,7 @@ defmodule TestServer.Ledger do
   end
 
   @impl true
-  def received(socket) do
-    if String.starts_with?(socket.topic, "durable:slow_sync") and
-         first_time?(socket.topic, :slow_sync),
-       do: Process.sleep(300)
-
-    get(socket.topic).received
-  end
+  def received(socket), do: get(socket.topic).received
 
   @impl true
   def put_received(socket, number, reply) do
@@ -316,6 +313,9 @@ defmodule TestServer.Elsewhere do
   @behaviour PhoenixDurableChannel.Stream
 
   @impl true
+  def delivery, do: :reader
+
+  @impl true
   def append(socket, event, payload),
     do: PhoenixDurableChannel.Stream.S2.append(socket, event, payload)
 
@@ -331,6 +331,9 @@ end
 defmodule TestServer.ExpiringDurableStreams do
   @behaviour PhoenixDurableChannel.Stream
   alias PhoenixDurableChannel.Stream.DurableStreams
+
+  @impl true
+  def delivery, do: :reader
 
   @impl true
   def append(socket, event, payload), do: DurableStreams.append(socket, event, payload)
@@ -407,10 +410,16 @@ defmodule TestServer.DurableChannel do
   @impl true
   def join(_topic, params, socket) do
     if params["greet"], do: send(self(), :greet)
+    if params["busy_after_join"], do: send(self(), :busy)
     {:ok, assign(socket, stream: params["stream"], ledger: params["ledger"])}
   end
 
   @impl true
+  def handle_info(:busy, socket) do
+    Process.sleep(300)
+    {:noreply, socket}
+  end
+
   def handle_info(:greet, socket) do
     push_durable(socket, "update", %{body: "welcome"})
     {:noreply, socket}
@@ -467,6 +476,11 @@ defmodule TestServer.DurableChannel do
     do: {:reply, {:error, %{reason: "refused"}}, socket}
 
   def handle_in("action", %{"body" => "quiet"}, socket), do: {:noreply, socket}
+
+  def handle_in("action", %{"body" => "stop"}, socket),
+    do: {:stop, :normal, {:ok, %{stopped: true}}, socket}
+
+  def handle_in("action", %{"body" => "stop_quietly"}, socket), do: {:stop, :normal, socket}
   def handle_in("action", %{"body" => "crash"}, _socket), do: raise("crash requested by the test")
 
   def handle_in("action", %{"body" => "lose_reply"}, socket) do

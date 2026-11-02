@@ -1,22 +1,22 @@
 import type { ActivityTracker } from "@supergrain/activity"
 import { createReactive } from "@supergrain/kernel"
-import type { Actor, SnapshotFrom } from "xstate"
-import { startMachine, type CloseDetails, type Later, type TransportConstructor } from "./actors"
+import type { Actor } from "xstate"
+import { startMachine, tagged, type CloseDetails, type TransportConstructor } from "./actors"
 import { Channel, type ChannelOptions } from "./channel"
-import { AUTH_TOKEN_PREFIX, DEFAULT_TIMEOUT, DEFAULT_VSN, TRANSPORTS } from "./constants"
+import {
+  AUTH_TOKEN_PREFIX,
+  DEFAULT_TIMEOUT,
+  DEFAULT_VSN,
+  TRANSPORTS,
+  decodeConnectionState,
+  type ConnectionState,
+} from "./constants"
 import { LongPoll } from "./longpoll"
-import { socketMachine, type SocketHooks, type TransportKind } from "./machines/socket"
+import { socketMachine, type SocketEmitted, type TransportKind } from "./machines/socket"
 import { Serializer, type EncodedMessage, type Message } from "./serializer"
 import { appendParams, type Params } from "./url"
 
-export type ConnectionState = "connecting" | "open" | "closing" | "closed"
-
-function connectionState(snapshot: SnapshotFrom<typeof socketMachine>): ConnectionState {
-  if (snapshot.matches({ connection: { engaged: { live: "connecting" } } })) return "connecting"
-  if (snapshot.matches({ connection: { engaged: { live: "open" } } })) return "open"
-  if (snapshot.matches({ connection: { engaged: { live: "closing" } } })) return "closing"
-  return "closed"
-}
+export type { ConnectionState }
 
 export interface SocketOptions {
   transport?: TransportConstructor
@@ -113,10 +113,20 @@ export class Socket {
     })
     this.actor = startMachine(
       socketMachine,
-      (later) => ({
-        hooks: this.hooks(options.activity ?? null, later),
+      {
         transport: kind,
         settings: {
+          url: () => this.endPointURL(),
+          protocols: () =>
+            this.authToken === null
+              ? undefined
+              : ["phoenix", `${AUTH_TOKEN_PREFIX}${btoa(this.authToken()).replace(/=/g, "")}`],
+          binaryType: this.binaryType,
+          transportFor: (transport) => (transport === "longpoll" ? LongPoll : this.webSocket),
+          longpollerTimeout: this.longpollerTimeout,
+          activity: options.activity ?? null,
+          makeRef: () => this.makeRef(),
+          reconnectAfterMs: (tries) => this.reconnectAfterMs(tries),
           longPollFallbackMs: options.longPollFallbackMs ?? null,
           heartbeatIntervalMs: this.heartbeatIntervalMs,
           heartbeatTimeoutMs: options.heartbeatTimeoutMs ?? 10_000,
@@ -125,12 +135,13 @@ export class Socket {
           disconnectAfterInactiveMs: options.disconnectAfterInactiveMs ?? null,
           closeTimeoutMs: 1500,
         },
-      }),
+      },
       (snapshot) => {
-        this.status.connectionState = connectionState(snapshot)
+        this.status.connectionState = tagged(snapshot, decodeConnectionState)
         this.status.transport = snapshot.context.transport
         this.status.online = !snapshot.matches({ online: "offline" })
       },
+      (event) => this.handle(event),
     )
   }
 
@@ -282,56 +293,42 @@ export class Socket {
     return ref
   }
 
-  private hooks(activity: ActivityTracker | null, later: Later): SocketHooks {
-    return {
-      url: () => this.endPointURL(),
-      protocols: () =>
-        this.authToken === null
-          ? undefined
-          : ["phoenix", `${AUTH_TOKEN_PREFIX}${btoa(this.authToken()).replace(/=/g, "")}`],
-      binaryType: this.binaryType,
-      transportFor: (kind) => (kind === "longpoll" ? LongPoll : this.webSocket),
-      longpollerTimeout: this.longpollerTimeout,
-      activity,
-      makeRef: () => this.makeRef(),
-      reconnectAfterMs: (tries) => this.reconnectAfterMs(tries),
-      send: (message) =>
-        later(() =>
-          this.encode(message, (data) =>
-            this.actor.getSnapshot().children.transport?.send({ type: "SEND", data }),
-          ),
-        ),
-      buffered: (message) => this.log("push", "buffered until the socket opens", message),
-      opened: () =>
-        later(() => {
-          this.log("transport", `connected to ${this.endPointURL()}`)
-          for (const entry of this.stateChangeCallbacks) if (entry.kind === "open") entry.callback()
-          for (const channel of this.channels) channel.socketOpened()
-        }),
-      connectionLost: () =>
-        later(() => {
-          for (const channel of this.channels) channel.socketClosed()
-        }),
-      closed: (details) =>
-        later(() => {
-          this.log("transport", "close", details)
-          for (const entry of this.stateChangeCallbacks)
-            if (entry.kind === "close") entry.callback(details)
-        }),
-      errored: (error) =>
-        later(() => {
-          this.log("transport", "error", error)
-          for (const entry of this.stateChangeCallbacks)
-            if (entry.kind === "error")
-              entry.callback(error, this.transport, this.establishedConnections)
-        }),
-      message: (data) => later(() => this.decode(data, (message) => this.receive(message))),
-      disconnected: () =>
-        later(() => {
-          const callbacks = this.disconnectCallbacks
-          this.disconnectCallbacks = []
-          for (const callback of callbacks) callback()
-        }),
+  private handle(event: SocketEmitted): void {
+    switch (event.type) {
+      case "send":
+        return this.encode(event.message, (data) =>
+          this.actor.getSnapshot().children.transport?.send({ type: "SEND", data }),
+        )
+      case "buffered":
+        return this.log("push", "buffered until the socket opens", event.message)
+      case "opened":
+        this.log("transport", `connected to ${this.endPointURL()}`)
+        for (const entry of this.stateChangeCallbacks) if (entry.kind === "open") entry.callback()
+        for (const channel of this.channels) channel.socketOpened()
+        return
+      case "connectionLost":
+        for (const channel of this.channels) channel.socketClosed()
+        return
+      case "closed": {
+        const details = { code: event.code, reason: event.reason, wasClean: event.wasClean }
+        this.log("transport", "close", details)
+        for (const entry of this.stateChangeCallbacks)
+          if (entry.kind === "close") entry.callback(details)
+        return
+      }
+      case "errored":
+        this.log("transport", "error", event.error)
+        for (const entry of this.stateChangeCallbacks)
+          if (entry.kind === "error")
+            entry.callback(event.error, this.transport, this.establishedConnections)
+        return
+      case "message":
+        return this.decode(event.data, (message) => this.receive(message))
+      case "disconnected": {
+        const callbacks = this.disconnectCallbacks
+        this.disconnectCallbacks = []
+        for (const callback of callbacks) callback()
+      }
     }
   }
 

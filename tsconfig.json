@@ -17,6 +17,6 @@
     "types": ["vitest/globals"],
     "lib": ["dom", "dom.iterable", "es2022"]
   },
-  "include": ["assets/js", "integration_test", "vitest.config.ts"],
+  "include": ["assets/js", "integration_test", "scripts", "vitest.config.ts"],
   "exclude": ["integration_test/phoenix_app", "integration_test/durable_streams"]
 }
