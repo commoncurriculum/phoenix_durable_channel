@@ -8,7 +8,10 @@ export const phoenixUrl = inject("phoenixUrl")
 
 export function openSocket(path = "/socket", options: SocketOptions = {}): Socket {
   const socket = new Socket(`${phoenixUrl}${path}`, options)
-  onTestFinished(() => new Promise<void>((resolve) => socket.disconnect(resolve)))
+  onTestFinished(async () => {
+    await Promise.all(socket.channels.map((channel) => answer(channel.leave(500))))
+    await new Promise<void>((resolve) => socket.disconnect(resolve))
+  })
   return socket
 }
 
