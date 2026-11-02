@@ -560,7 +560,7 @@ describe("with the memory store, whose kept messages and replies the test app ca
 test("a node reads a Durable Streams ledger from its start once while the topic's channel comes and goes, and again once the topic has had no channel for keep_offsets_for since its last leave, whatever the stream", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()
-  const room = socket.channel(durableTopic("asks"))
+  const room = socket.channel(topic("asks"))
   await join(room)
   const name = durableTopic("cold")
   const readsFromStart = async () =>
@@ -589,6 +589,36 @@ test("a node reads a Durable Streams ledger from its start once while the topic'
 
   await pause(2500)
   await joinAndLeave()
+  expect(await readsFromStart()).toBe(2)
+})
+
+test("a node that has forgotten a Durable Streams ledger looks a reply up from the page before it, not from the ledger's start, after one read of the replies", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const room = socket.channel(topic("asks"))
+  await join(room)
+  const name = durableTopic("pages")
+  const readsFromStart = async () =>
+    (
+      (await answer(room.push("count", { key: `durable_streams_read:${name}/replies@-1` })))
+        .response as { count: number }
+    ).count
+  const first = socket.channel(name, { ledger: "durable-streams" }, { durable: true })
+  await join(first)
+  const body = "x".repeat(3000)
+  await Promise.all(
+    Array.from({ length: 200 }, () => answer(first.push("action", { body }, { durable: true }))),
+  )
+  await answer(first.leave())
+  expect(await readsFromStart()).toBe(1)
+
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  const again = socket.channel(name, { ledger: "durable-streams" }, { durable: true })
+  await join(again)
+  await expect.poll(readsFromStart).toBe(2)
+  expect(await answer(again.push("reply_of", { number: 100 }))).toMatchObject({
+    response: { found: true },
+  })
   expect(await readsFromStart()).toBe(2)
 })
 

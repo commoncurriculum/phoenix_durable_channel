@@ -15,9 +15,11 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     {:ok,
      %{
        channels: %{},
-       counts: %{},
-       forgets: %{},
-       keep_offsets_for: Keyword.get(options, :keep_offsets_for, :timer.minutes(5))
+       topics: %{},
+       keep_offsets_for:
+         options
+         |> Keyword.validate!(keep_offsets_for: :timer.minutes(5))
+         |> Keyword.fetch!(:keep_offsets_for)
      }}
   end
 
@@ -32,8 +34,11 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
        %{
          state
          | channels: Map.put(state.channels, channel, topic),
-           counts: Map.update(state.counts, topic, 1, &(&1 + 1)),
-           forgets: Map.delete(state.forgets, topic)
+           topics:
+             Map.update(state.topics, topic, 1, fn
+               count when is_integer(count) -> count + 1
+               _forget -> 1
+             end)
        }}
     end
   end
@@ -41,29 +46,23 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   @impl GenServer
   def handle_info({:DOWN, _reference, :process, channel, _reason}, state) do
     topic = Map.fetch!(state.channels, channel)
-    count = Map.fetch!(state.counts, topic) - 1
+    count = Map.fetch!(state.topics, topic) - 1
     state = %{state | channels: Map.delete(state.channels, channel)}
 
     if count == 0 do
       reference = make_ref()
       Process.send_after(self(), {:forget, topic, reference}, state.keep_offsets_for)
-
-      {:noreply,
-       %{
-         state
-         | counts: Map.delete(state.counts, topic),
-           forgets: Map.put(state.forgets, topic, reference)
-       }}
+      {:noreply, %{state | topics: Map.put(state.topics, topic, reference)}}
     else
-      {:noreply, %{state | counts: Map.put(state.counts, topic, count)}}
+      {:noreply, %{state | topics: Map.put(state.topics, topic, count)}}
     end
   end
 
   def handle_info({:forget, topic, reference}, state) do
-    if Map.get(state.forgets, topic) == reference do
+    if Map.get(state.topics, topic) == reference do
       :ets.delete(@table, topic)
       :ets.delete(@table, replies(topic))
-      {:noreply, %{state | forgets: Map.delete(state.forgets, topic)}}
+      {:noreply, %{state | topics: Map.delete(state.topics, topic)}}
     else
       {:noreply, state}
     end
@@ -150,7 +149,9 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
         offsets:
           kept.offsets
           |> Map.put(last, offset)
-          |> Map.reject(fn {number, _offset} -> number <= last - @replies_kept end)
+          |> Enum.sort()
+          |> Enum.take(-@replies_kept)
+          |> Map.new()
     }
 
     if Req.Response.get_header(response, "stream-up-to-date") == ["true"],
@@ -186,7 +187,9 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
         else:
           kept.offsets
           |> Map.put(number, offset)
-          |> Map.reject(fn {kept_number, _offset} -> kept_number <= number - @replies_kept end)
+          |> Enum.sort()
+          |> Enum.take(-@replies_kept)
+          |> Map.new()
 
     :ets.insert(@table, {topic, %{kept | last: max(kept.last, number), offsets: offsets}})
     :ok

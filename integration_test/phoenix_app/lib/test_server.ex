@@ -454,8 +454,8 @@ defmodule TestServer.DurableChannel do
     {:reply, {:ok, %{received: received, sent: sent}}, socket}
   end
 
-  def handle_in("count", %{"key" => key}, socket),
-    do: {:reply, {:ok, %{count: TestServer.Joins.count(key)}}, socket}
+  def handle_in("reply_of", %{"number" => number}, socket),
+    do: {:reply, {:ok, %{found: durable_ledger(socket).reply(socket, number) != nil}}, socket}
 
   def handle_in("counts", %{"topic" => topic}, socket),
     do:
