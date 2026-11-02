@@ -663,6 +663,19 @@ test("a channel reads through itself only while joined: rejoins the server refus
   expect((await counts()).reads).toBe(2)
 })
 
+test("a Memory stream that lost a topic's row gives every read of it one epoch", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("lost"), {}, { durable: true })
+  await join(channel)
+  await answer(channel.push("publish", { body: "1" }))
+  await answer(channel.push("reset"))
+  const epochOfARead = async () =>
+    ((await answer(channel.push("phx_read", { after: 0 }))).response as { epoch: string }).epoch
+  const first = await epochOfARead()
+  expect(await epochOfARead()).toBe(first)
+})
+
 test("a store that numbers afresh while the channel stays joined is read again from its start", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()

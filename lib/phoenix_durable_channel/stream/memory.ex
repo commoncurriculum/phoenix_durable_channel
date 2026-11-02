@@ -11,13 +11,13 @@ defmodule PhoenixDurableChannel.Stream.Memory do
   @impl GenServer
   def init(options) do
     :ets.new(__MODULE__, [:named_table, :public, read_concurrency: true])
-    forget_after = Keyword.get(options, :forget_after, :timer.hours(1))
-    :timer.send_interval(div(forget_after, 4) + 1, :forget)
+    options = Keyword.validate!(options, forget_after: :timer.hours(1), kept: 1000)
+    :timer.send_interval(div(options[:forget_after], 4) + 1, :forget)
 
     {:ok,
      %{
-       kept: Keyword.get(options, :kept, 1000),
-       forget_after: forget_after,
+       kept: options[:kept],
+       forget_after: options[:forget_after],
        channels: %{},
        counts: %{}
      }}
@@ -83,6 +83,7 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     __MODULE__
     |> :ets.select([{{:"$1", %{touched_at: :"$2"}}, [{:<, :"$2", oldest}], [:"$1"]}])
     |> Enum.reject(&Map.has_key?(state.counts, &1))
+    |> Enum.reject(&(:global.whereis_name({PhoenixDurableChannel.Channel, &1}) != :undefined))
     |> Enum.each(&:ets.delete(__MODULE__, &1))
 
     {:noreply, state}
@@ -130,6 +131,7 @@ defmodule PhoenixDurableChannel.Stream.Memory do
 
   @impl PhoenixDurableChannel.Stream.ThroughChannel
   def since(socket, number, limit) do
+    :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})
     kept = kept(socket.topic)
     sent = min(kept.latest, number + limit)
 
