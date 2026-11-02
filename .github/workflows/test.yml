@@ -89,13 +89,25 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Every commit type checks
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "25.3.2.21"
+          elixir-version: "1.17.3-otp-25"
+          version-type: strict
+
+      - name: Every commit type checks and has no comments
         env:
           FIRST: ${{ github.event.pull_request.base.sha || github.event.before }}
           LAST: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          if [ -z "$FIRST" ] || [ "$FIRST" = 0000000000000000000000000000000000000000 ]; then FIRST="$LAST~1"; fi
-          for commit in $(git rev-list --reverse "$FIRST..$LAST"); do
+          if [ -z "$FIRST" ] || ! git cat-file -e "$FIRST^{commit}" 2>/dev/null; then
+            FIRST="$(git merge-base origin/main "$LAST")"
+            if [ "$FIRST" = "$(git rev-parse "$LAST")" ]; then FIRST="$LAST~1"; fi
+          fi
+          commits="$(git rev-list --reverse "$FIRST..$LAST")"
+          if [ -z "$commits" ]; then echo "no commits between $FIRST and $LAST"; exit 1; fi
+          for commit in $commits; do
             git checkout -q "$commit"
             pnpm lint || { echo "$commit does not type check"; exit 1; }
+            elixir -e "ExUnit.start()" -r test/no_comments_test.exs || { echo "$commit has a comment"; exit 1; }
           done
