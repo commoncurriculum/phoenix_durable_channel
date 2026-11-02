@@ -6,9 +6,11 @@ import ts from "typescript"
 const vendored = /^(phoenix_js_test\/test\/|test\/phoenix\/|test\/support\/)/
 const directive = /^\/\/\/ <reference /
 
-const files = execFileSync("git", ["ls-files", "*.ts", "*.js", "*.mjs", "*.cjs"], {
-  encoding: "utf8",
-})
+const files = execFileSync(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "*.ts", "*.js", "*.mjs", "*.cjs"],
+  { encoding: "utf8" },
+)
   .split("\n")
   .filter((file) => file !== "" && !vendored.test(file))
 

@@ -186,7 +186,7 @@ end
 
 - `use PhoenixDurableChannel.Channel` comes after `use Phoenix.Channel`. It wraps your `join/3`, `handle_in/3` and `handle_info/2`; your functions stay as they are.
 - `push/3` stays fire and forget. `push_durable/3` is the durable one.
-- `handle_in/3` sees a durable message's plain payload, and `socket.assigns.phx_number` is its number. It answers with what Phoenix allows (`{:reply, ...}`, `{:noreply, socket}` meaning `:ok`, `{:stop, reason, reply, socket}`, `{:stop, reason, socket}` meaning `:ok`), or `{:retry, reason, socket}` for a message it can't take now. A stop's reply is recorded before the process stops. A handler that raises answers `{:error, %{reason: "crashed"}}` and is not run again.
+- `handle_in/3` sees a durable message's plain payload, and `socket.assigns.phx_number` is its number. It answers with what Phoenix allows (`{:reply, reply, socket}`, `{:noreply, socket}` and `{:noreply, socket, timeout | :hibernate}` meaning `:ok`, `{:stop, reason, reply, socket}`, `{:stop, reason, socket}` meaning `:ok`), or `{:retry, reason, socket}` for a message it can't take now. A stop's reply is recorded before the process stops. A handler that raises answers `{:error, %{reason: "crashed"}}` and is not run again.
 - **A handler must be safe to run twice.** A message runs once unless its process dies between running it and the ledger's record; then the client's resend runs it again.
 - `ledger:` and `stream:` are read on every call, so they can come from runtime config. Define `durable_ledger/1` or `durable_stream/1` to pick per socket.
 - Only what was appended is kept. Above, a broadcast while no process of the client's channel is subscribed (the client is offline) is not appended, so the client reloads the room after a rejoin, as it would today.
@@ -239,10 +239,10 @@ The two directions are separate.
 **The client's durable pushes:**
 
 - After every join the client sends `phx_sync`, and the server replies `{received}`, the last number its ledger recorded.
-- The server reads `received` from the ledger once, at the join, and counts on from it in the channel's assigns: the join makes its process the only one taking the client's pushes. A ledger reset while the process runs is noticed at the next join.
-- The client numbers its pushes on from there, sends them in order, and sends them again after every rejoin until answered. The server answers one it already handled with the reply its ledger kept.
+- The server reads `received` from the ledger once, at the join, and counts on from it in the channel's assigns, with the last 32 replies: the join makes its process the only one taking the client's pushes. A ledger reset while the process runs changes nothing until the next join, which reads the ledger again.
+- The client numbers its pushes on from there, sends them in order, and sends them again after every rejoin until answered. The server answers one it already handled with the reply its process or its ledger kept, and one whose reply neither kept with `{:error, %{reason: "reply_lost"}}`.
 - A push the server can't take now (`{:retry, reason, socket}`) is sent again, with the ones after it, after a backoff.
-- At most 32 are unanswered at once, and the ledger keeps the last 32 replies or more, so a resend always finds its reply.
+- At most 32 are unanswered at once, and the ledger keeps the last 32 replies or more, so a resend finds its reply unless the ledger lost what it kept.
 - A durable join replaces the topic's process from an earlier connection, after that process has run what it had already received, so two processes never run the client's pushes at once. The replaced process sends its client `phx_error`, so a client still on that join rejoins and sends again what crossed it (Phoenix answers those "unmatched topic"): the join that replaced it can be a late one from a connection the client already gave up on.
 - Two clients joined on one topic at once would take it from each other in turn. A reload is a new client, numbering from 1.
 
@@ -265,16 +265,16 @@ Two behaviours, and each store implements both:
 | `DurableStreams` | a Durable Streams stream per topic; replies in `<topic>/replies`                          | `{type: "durable-streams", url, token, last, offset}` |
 | `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart                  | `{type: "phoenix", last, epoch}`                      |
 
-A stream's `delivery/0` says how its messages reach the client: `:channel` or `:reader`.
+A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3`) is read through the channel. Any other is read from the store's own protocol.
 
-**Read through the channel** (`delivery/0` is `:channel`: `Mongo`, `Memory`, or your own `PhoenixDurableChannel.Stream.ThroughChannel`):
+**Read through the channel** (`Mongo`, `Memory`, or your own `ThroughChannel`):
 
 - `push_durable/3` pushes each message with its number, and `since/3` answers the client's `phx_read {after}` a page at a time.
 - The server resends what it kept after `after`, then replies `{sent, epoch}`. Until that reply the client holds what arrives; after it, each message must be the next one, and one that isn't ends the read, as losing the connection does. The client reads again from the last message it delivered.
 - The read has no timeout: a server still paging is still sending.
 - The epoch names one numbering of the stream. A reply in another epoch ends the read, and the client reads that epoch from where it last got to in it, or from the start.
 
-**Read from the store's own protocol** (`delivery/0` is `:reader`: `S2`, `DurableStreams`):
+**Read from the store's own protocol** (`S2`, `DurableStreams`):
 
 - Each topic is one stream of the same name, and each token reads only that stream. A store that refuses the token (401 or 403) makes the client ask the channel for a fresh reader (`phx_reader`) and read again.
 - S2 record `seq_num` n is message n + 1.
@@ -290,7 +290,7 @@ socket.channel(topic, params, {
 })
 ```
 
-`latest()` is what the last join reply, or the last `refresh()`, published. `refresh()` asks the channel for a fresh reader. A type the client has no reader for is logged to the console, and its messages are not read.
+`latest()` is what the last join reply, or the last `refresh()`, published. `refresh()` asks the channel for a fresh reader. A `MessageStream` may deliver a message again: the client drops any at or before the last one it delivered. A type the client has no reader for is logged to the console, and its messages are not read.
 
 ## Tests
 
@@ -332,4 +332,4 @@ A push may be in the stream twice in a row, when its channel process died betwee
 verification/check.sh
 ```
 
-TLA+ models of the socket, channel and push lifecycle, the client's durable pushes, reading the server's durable messages through the channel and from a store, the socket's push buffer, and numbering on Durable Streams. The XState machines are in `assets/js/phoenix_durable_channel/machines/`, one per file. The `verify-phoenix-durable-channel` skill in `.agents/skills` says what each model checks, how to read a failure, and how to keep the models in step with the code.
+TLA+ models of the socket, channel and push lifecycle, the client's durable pushes, reading the server's durable messages through the channel and from a store, the socket's push buffer, and numbering on Durable Streams. The XState machines are in `assets/js/phoenix_durable_channel/machines/`, one per file. The `verify-phoenix-durable-channel` skill in `.agents/skills` lists the requirements every change is checked against, these models among them.
