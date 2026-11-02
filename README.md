@@ -58,7 +58,7 @@ The example is a chat app with a `room:*` channel today. It keeps that channel a
 
 ### 2a. The endpoint: add the serializer
 
-A durable message carries its number in a sixth slot of Phoenix's V2 JSON frame. `PhoenixDurableChannel.Serializer` reads and writes it; plain frames are unchanged. Keep Phoenix's V1 serializer for any client that still asks for it. In `lib/my_app_web/endpoint.ex`:
+A durable message carries its number in a sixth slot of Phoenix's V2 JSON frame, and one the server pushes carries its epoch in a seventh. `PhoenixDurableChannel.Serializer` reads and writes it; plain frames are unchanged. Keep Phoenix's V1 serializer for any client that still asks for it. In `lib/my_app_web/endpoint.ex`:
 
 ```diff
  socket "/socket", MyAppWeb.UserSocket,
@@ -241,7 +241,7 @@ New channel options, the third argument of `socket.channel`: `durable`, `after` 
 
 ## How durable messages work
 
-On the wire, a durable message's number is a sixth element of the V2 frame, `[join_ref, ref, topic, event, payload, number]`. A client opened with `durable` joins with `phx_durable: true`. The server channel assigns `phx_durable` and adds `phx_durable: true` to the join reply, so the client knows the server speaks durable messages. On a channel joined without it, `phx_sync`, `phx_read`, `phx_reader` and any numbered frame are answered `{:error, %{reason: "invalid"}}`, as is a `phx_read` with an `after` that is not a number of 0 or more, or on a stream that is not read through the channel.
+On the wire, a durable message's number is a sixth element of the V2 frame, `[join_ref, ref, topic, event, payload, number]`, and one the server pushes adds its epoch as a seventh. A client opened with `durable` joins with `phx_durable: true`. The server channel assigns `phx_durable` and adds `phx_durable: true` to the join reply, so the client knows the server speaks durable messages. On a channel joined without it, `phx_sync`, `phx_read`, `phx_reader` and any numbered frame are answered `{:error, %{reason: "invalid"}}`, as is a `phx_read` with an `after` that is not a number of 0 or more, or on a stream that is not read through the channel.
 
 The two directions are separate.
 
@@ -276,12 +276,12 @@ Two behaviours, and each store implements both:
 | `DurableStreams` | a Durable Streams stream per topic; replies in `<topic>/replies`                          | `{type: "durable-streams", url, token, last, offset}` |
 | `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart                  | `{type: "phoenix", last, epoch}`                      |
 
-A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3`) is read through the channel. Any other is read from the store's own protocol.
+A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3` and `epoch/1`) is read through the channel. Any other is read from the store's own protocol.
 
 **Read through the channel** (`Mongo`, `Memory`, or your own `ThroughChannel`):
 
-- `push_durable/3` pushes each message with its number, and `since/3` answers the client's `phx_read {after}` a page at a time.
-- The server resends what it kept after `after`, then replies `{sent, epoch}`. Until that reply the client holds what arrives; after it, each message must be the next one. One past it ends the read, as losing the connection does, and so does one the client already passed, which is how a store that numbers afresh shows. Only when the reply's `sent` is below the client's `after` (an `after` past the stream's last number) are passed numbers ignored, until the next one arrives. The client reads again from the last message it delivered. Pushes carry no epoch, so a store that numbers afresh under a joined channel is noticed only when its first new number is one the client already passed.
+- `push_durable/3` pushes each message with its number and the stream's `epoch/1`, and `since/3` answers the client's `phx_read {after}` a page at a time.
+- The server resends what it kept after `after`, then replies `{sent, epoch}`. Until that reply the client holds what arrives in its epoch; after it, each message must be the next one in its epoch. One past it ends the read, as losing the connection does, and so does one the client already passed. Only when the reply's `sent` is below the client's `after` (an `after` past the stream's last number) are passed numbers ignored, until the next one arrives. The client reads again from the last message it delivered. A message in another epoch ends the read too, so a store that numbers afresh under a joined channel is noticed at its first new message.
 - The read has no timeout: a server still paging is still sending. A read the server answers with an error is logged through the socket's `logger` and asked again after a backoff.
 - The epoch names one numbering of the stream. A reply in another epoch ends the read, and the client reads that epoch from where it last got to in it, or from the start.
 
