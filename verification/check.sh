@@ -92,6 +92,8 @@ fromStartOnReturn DeliveredOnceInOrder INVARIANT
 replyOnFirstPage CatchesUp PROPERTY
 readTimeout CatchesUp PROPERTY
 readWhileAway ReadOnlyWhileJoined INVARIANT
+deliversOld NothingAtOrBeforeAfter INVARIANT
+endsOnOld NoReadForAnOldMessage INVARIANT
 EOF
 
 check SocketBuffer "  MaxPush = 3

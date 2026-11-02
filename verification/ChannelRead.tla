@@ -14,7 +14,6 @@ VARIABLES
     left,
     read,
     held,
-    next,
     delivered,
     nodeEpoch,
     newEpoch,
@@ -24,11 +23,12 @@ VARIABLES
     toServer,
     toClient,
     faults,
-    startAt
+    startAt,
+    rereadForOld
 
-vars == <<at, started, from, left, read, held, next, delivered, nodeEpoch, newEpoch,
-          sent, forgotten, serving, toServer, toClient, faults, startAt>>
-client == <<started, from, left, read, held, next, delivered, startAt>>
+vars == <<at, started, from, left, read, held, delivered, nodeEpoch, newEpoch,
+          sent, forgotten, serving, toServer, toClient, faults, startAt, rereadForOld>>
+client == <<started, from, left, read, held, delivered, startAt, rereadForOld>>
 store == <<nodeEpoch, newEpoch, sent, forgotten>>
 
 Init ==
@@ -38,7 +38,6 @@ Init ==
     /\ left = [e \in Epochs |-> 0]
     /\ read = "idle"
     /\ held = {}
-    /\ next = 0
     /\ delivered = <<>>
     /\ nodeEpoch = [n \in Nodes |-> n]
     /\ newEpoch = NodeCount + 1
@@ -49,6 +48,7 @@ Init ==
     /\ toClient = <<>>
     /\ faults = 0
     /\ startAt = [after |-> 0, e |-> 0]
+    /\ rereadForOld = FALSE
 
 Max(a, b) == IF a > b THEN a ELSE b
 Min(a, b) == IF a < b THEN a ELSE b
@@ -67,17 +67,17 @@ Here == nodeEpoch[at]
 
 Joins ==
     /\ at = 0
-    /\ \E n \in Nodes, appAfter \in BOOLEAN :
+    /\ \E n \in Nodes, fromNow \in BOOLEAN, appAfter \in 0..MaxPublish :
         /\ at' = n
         /\ IF started
            THEN UNCHANGED <<started, from, startAt>>
-           ELSE LET f == [after |-> IF appAfter THEN 0 ELSE sent[nodeEpoch[n]],
+           ELSE LET f == [after |-> IF fromNow THEN sent[nodeEpoch[n]] ELSE appAfter,
                           e |-> nodeEpoch[n]]
                 IN /\ started' = TRUE
                    /\ from' = f
                    /\ startAt' = f
-    /\ UNCHANGED <<left, read, held, next, delivered, store, serving, toServer,
-                   toClient, faults>>
+    /\ UNCHANGED <<left, read, held, delivered, store, serving, toServer,
+                   toClient, faults, rereadForOld>>
 
 Lost ==
     /\ at' = 0
@@ -91,7 +91,7 @@ Drops ==
     /\ at # 0
     /\ faults' = faults + 1
     /\ Lost
-    /\ UNCHANGED <<started, from, left, held, next, delivered, store, startAt>>
+    /\ UNCHANGED <<started, from, left, held, delivered, store, startAt, rereadForOld>>
 
 ---------------------------------------------------------------------------
 
@@ -103,8 +103,8 @@ StartsRead ==
     /\ read' = "waiting"
     /\ held' = {}
     /\ toServer' = Append(toServer, [id |-> 1, after |-> from.after])
-    /\ UNCHANGED <<at, started, from, left, next, delivered, store, serving, toClient,
-                   faults, startAt>>
+    /\ UNCHANGED <<at, started, from, left, delivered, store, serving, toClient,
+                   faults, startAt, rereadForOld>>
 
 ReadTimesOut ==
     /\ Broken = "readTimeout"
@@ -112,8 +112,8 @@ ReadTimesOut ==
     /\ serving.id = 1
     /\ read' = "idle"
     /\ serving' = [serving EXCEPT !.id = 0]
-    /\ UNCHANGED <<at, started, from, left, held, next, delivered, store, toServer,
-                   toClient, faults, startAt>>
+    /\ UNCHANGED <<at, started, from, left, held, delivered, store, toServer,
+                   toClient, faults, startAt, rereadForOld>>
 
 Deliver(m) ==
     /\ delivered' = Append(delivered, [e |-> m.e, n |-> m.n])
@@ -126,18 +126,19 @@ MessageArrives ==
     /\ LET m == Head(toClient)
        IN CASE read = "waiting" /\ Broken = "deliverOnArrival" ->
                   /\ Deliver(m)
-                  /\ UNCHANGED <<read, held, next>>
+                  /\ UNCHANGED <<read, held, rereadForOld>>
             [] read = "waiting" ->
                   /\ held' = held \cup {m.n}
-                  /\ UNCHANGED <<read, from, next, delivered>>
-            [] read = "live" /\ (m.n = next \/ (Broken = "noGapCheck" /\ m.n > from.after)) ->
+                  /\ UNCHANGED <<read, from, delivered, rereadForOld>>
+            [] read = "live" /\ (m.n = from.after + 1
+                                  \/ (Broken = "noGapCheck" /\ m.n > from.after)) ->
                   /\ Deliver(m)
-                  /\ next' = m.n + 1
-                  /\ UNCHANGED <<read, held>>
-            [] read = "live" ->
+                  /\ UNCHANGED <<read, held, rereadForOld>>
+            [] read = "live" /\ (m.n > from.after \/ Broken = "endsOnOld") ->
                   /\ read' = "idle"
-                  /\ UNCHANGED <<from, held, next, delivered>>
-            [] OTHER -> UNCHANGED <<read, from, held, next, delivered>>
+                  /\ rereadForOld' = (rereadForOld \/ m.n <= from.after)
+                  /\ UNCHANGED <<from, held, delivered>>
+            [] OTHER -> UNCHANGED <<read, from, held, delivered, rereadForOld>>
     /\ UNCHANGED <<at, started, left, store, serving, toServer, faults, startAt>>
 
 ReplyArrives ==
@@ -152,18 +153,20 @@ ReplyArrives ==
                   /\ from' = [after |-> IF Broken = "fromStartOnReturn" THEN 0
                                         ELSE left[m.epoch],
                               e |-> m.epoch]
-                  /\ UNCHANGED <<held, next, delivered>>
+                  /\ UNCHANGED <<held, delivered>>
             [] current ->
-                  /\ delivered' = delivered \o [i \in 1..Cardinality(held) |->
-                                                  [e |-> m.epoch, n |-> Sorted(held)[i]]]
-                  /\ from' = [from EXCEPT !.after =
-                                 Max(IF held = {} THEN from.after ELSE MaxOf(held), m.sent)]
+                  /\ LET unseen == IF Broken = "deliversOld" THEN held
+                                   ELSE {n \in held : n > from.after}
+                     IN /\ delivered' = delivered \o [i \in 1..Cardinality(unseen) |->
+                                                        [e |-> m.epoch, n |-> Sorted(unseen)[i]]]
+                        /\ from' = [from EXCEPT !.after =
+                                       Max(IF unseen = {} THEN from.after
+                                           ELSE Max(from.after, MaxOf(unseen)), m.sent)]
                   /\ held' = {}
-                  /\ next' = m.sent + 1
                   /\ read' = "live"
                   /\ UNCHANGED left
-            [] OTHER -> UNCHANGED <<from, left, read, held, next, delivered>>
-    /\ UNCHANGED <<at, started, store, serving, toServer, faults, startAt>>
+            [] OTHER -> UNCHANGED <<from, left, read, held, delivered>>
+    /\ UNCHANGED <<at, started, store, serving, toServer, faults, startAt, rereadForOld>>
 
 ---------------------------------------------------------------------------
 
@@ -208,8 +211,8 @@ StoreStartsAgain ==
            ELSE UNCHANGED <<at, read, serving, toServer, toClient>>
     /\ newEpoch' = newEpoch + 1
     /\ faults' = faults + 1
-    /\ UNCHANGED <<started, from, left, held, next, delivered, sent, forgotten,
-                   startAt>>
+    /\ UNCHANGED <<started, from, left, held, delivered, sent, forgotten,
+                   startAt, rereadForOld>>
 
 ServerTakesRead ==
     /\ at # 0
@@ -270,6 +273,12 @@ NothingLostButForgotten ==
 
 ReadOnlyWhileJoined == read # "idle" => at # 0
 
-CatchesUp == <>[](at # 0 /\ read = "live" /\ from.e = Here /\ next = sent[Here] + 1)
+NothingAtOrBeforeAfter ==
+    \A i \in DOMAIN delivered :
+        delivered[i].e = startAt.e => delivered[i].n > startAt.after
+
+NoReadForAnOldMessage == ~rereadForOld
+
+CatchesUp == <>[](at # 0 /\ read = "live" /\ from.e = Here /\ from.after >= sent[Here])
 
 ==============================================================================

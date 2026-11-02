@@ -633,6 +633,26 @@ test("a channel reads through itself only while joined: rejoins the server refus
   expect((await counts()).reads).toBe(2)
 })
 
+test("a live message at or before an `after` beyond the stream's last number is ignored, costs no read, and the next one is delivered", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const room = socket.channel(durableTopic("asks"))
+  await join(room)
+  const name = durableTopic("ahead")
+  const reads = async () =>
+    ((await answer(room.push("counts", { topic: name }))).response as { reads: number }).reads
+  const channel = socket.channel(name, { stream: "slow" }, { durable: true, after: 3 })
+  const seen = updates(channel)
+  await join(channel)
+  await expect.poll(reads).toBe(1)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  for (const body of ["1", "2", "3", "4"]) await answer(channel.push("publish", { body }))
+  await waitFor(() => seen.length === 1)
+  expect(seen).toEqual(["4"])
+  expect(await reads()).toBe(1)
+})
+
 test("an `after` that is not a whole number of 0 or more is refused when the channel is made; a read the server refuses is logged and asked again", async () => {
   const logs: Array<string> = []
   const socket = openSocket("/socket", { ...fast, logger: (_kind, message) => logs.push(message) })

@@ -55,17 +55,20 @@ export const readerMachine = setup({
     readsThroughChannel: ({ context }) => context.published.type === "phoenix",
   },
   actions: {
-    take: enqueueActions(({ context, enqueue }, messages: ReadonlyArray<StreamMessage>) => {
-      let after = context.from.after
-      const unseen = messages.filter((message) => message.number > after)
-      for (const message of unseen.sort((a, b) => a.number - b.number)) {
-        if (message.number > after + 1)
-          enqueue.emit({ type: "skipped", after, next: message.number })
-        enqueue.emit({ type: "deliver", message })
-        after = message.number
-      }
-      enqueue.assign({ from: { ...context.from, after }, held: new Map(), tries: 0 })
-    }),
+    advance: enqueueActions(
+      (
+        { context, enqueue },
+        { next, after, message }: { next: number; after: number; message: StreamMessage | null },
+      ) => {
+        if (next > context.from.after + 1)
+          enqueue.emit({ type: "skipped", after: context.from.after, next })
+        if (message) enqueue.emit({ type: "deliver", message })
+        enqueue.assign({
+          from: { ...context.from, after: Math.max(context.from.after, after) },
+          tries: message ? 0 : context.tries,
+        })
+      },
+    ),
   },
 }).createMachine({
   id: "reader",
@@ -114,16 +117,20 @@ export const readerMachine = setup({
           on: {
             MESSAGE: {
               guard: "isNext",
-              actions: { type: "take", params: ({ event }) => [event.message] },
+              actions: {
+                type: "advance",
+                params: ({ event }) => ({
+                  next: event.message.number,
+                  after: event.message.number,
+                  message: event.message,
+                }),
+              },
             },
             PASSED: {
-              actions: enqueueActions(({ context, event, enqueue }) => {
-                if (event.number > context.from.after + 1)
-                  enqueue.emit({ type: "skipped", after: context.from.after, next: event.number })
-                enqueue.assign({
-                  from: { ...context.from, after: Math.max(context.from.after, event.number) },
-                })
-              }),
+              actions: {
+                type: "advance",
+                params: ({ event }) => ({ next: event.number, after: event.number, message: null }),
+              },
             },
             REACHED: {
               actions: assign({
@@ -161,18 +168,21 @@ export const readerMachine = setup({
               {
                 guard: "isThisRead",
                 target: "live",
-                actions: [
-                  { type: "take", params: ({ context }) => [...context.held.values()] },
-                  enqueueActions(({ context, event, enqueue }) => {
-                    if (event.sent <= context.from.after) return
-                    enqueue.emit({
-                      type: "skipped",
-                      after: context.from.after,
-                      next: event.sent + 1,
+                actions: enqueueActions(({ context, event, enqueue }) => {
+                  const unseen = [...context.held.values()].filter(
+                    (message) => message.number > context.from.after,
+                  )
+                  for (const message of unseen.sort((a, b) => a.number - b.number))
+                    enqueue({
+                      type: "advance",
+                      params: { next: message.number, after: message.number, message },
                     })
-                    enqueue.assign({ from: { ...context.from, after: event.sent } })
-                  }),
-                ],
+                  enqueue({
+                    type: "advance",
+                    params: { next: event.sent + 1, after: event.sent, message: null },
+                  })
+                  enqueue.assign({ held: new Map() })
+                }),
               },
             ],
             READ_REFUSED: { guard: "isThisRead", target: "backingOff" },
@@ -183,9 +193,16 @@ export const readerMachine = setup({
             MESSAGE: [
               {
                 guard: "isNextInLine",
-                actions: { type: "take", params: ({ event }) => [event.message] },
+                actions: {
+                  type: "advance",
+                  params: ({ event }) => ({
+                    next: event.message.number,
+                    after: event.message.number,
+                    message: event.message,
+                  }),
+                },
               },
-              { target: "backingOff" },
+              { guard: "isNext", target: "backingOff" },
             ],
           },
         },
