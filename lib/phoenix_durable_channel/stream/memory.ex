@@ -14,7 +14,13 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     forget_after = Keyword.get(options, :forget_after, :timer.hours(1))
     :timer.send_interval(div(forget_after, 4) + 1, :forget)
 
-    {:ok, %{kept: Keyword.get(options, :kept, 1000), forget_after: forget_after, channels: %{}}}
+    {:ok,
+     %{
+       kept: Keyword.get(options, :kept, 1000),
+       forget_after: forget_after,
+       channels: %{},
+       counts: %{}
+     }}
   end
 
   @impl GenServer
@@ -40,25 +46,43 @@ defmodule PhoenixDurableChannel.Stream.Memory do
   end
 
   def handle_call({:watch, topic, channel}, _from, state) do
-    if not Map.has_key?(state.channels, channel), do: Process.monitor(channel)
     put(topic, kept(topic))
-    {:reply, :ok, put_in(state, [:channels, channel], topic)}
+
+    if Map.has_key?(state.channels, channel) do
+      {:reply, :ok, state}
+    else
+      Process.monitor(channel)
+
+      {:reply, :ok,
+       %{
+         state
+         | channels: Map.put(state.channels, channel, topic),
+           counts: Map.update(state.counts, topic, 1, &(&1 + 1))
+       }}
+    end
   end
 
   @impl GenServer
   def handle_info({:DOWN, _ref, :process, channel, _reason}, state) do
-    {topic, channels} = Map.pop(state.channels, channel)
+    topic = Map.fetch!(state.channels, channel)
     put(topic, kept(topic))
-    {:noreply, %{state | channels: channels}}
+    channels = Map.delete(state.channels, channel)
+
+    case Map.fetch!(state.counts, topic) do
+      1 ->
+        {:noreply, %{state | channels: channels, counts: Map.delete(state.counts, topic)}}
+
+      count ->
+        {:noreply, %{state | channels: channels, counts: Map.put(state.counts, topic, count - 1)}}
+    end
   end
 
   def handle_info(:forget, state) do
     oldest = System.monotonic_time(:millisecond) - state.forget_after
-    watched = MapSet.new(Map.values(state.channels))
 
     __MODULE__
     |> :ets.select([{{:"$1", %{touched_at: :"$2"}}, [{:<, :"$2", oldest}], [:"$1"]}])
-    |> Enum.reject(&MapSet.member?(watched, &1))
+    |> Enum.reject(&Map.has_key?(state.counts, &1))
     |> Enum.each(&:ets.delete(__MODULE__, &1))
 
     {:noreply, state}

@@ -392,6 +392,14 @@ defmodule TestServer.DurableChannel do
     {:reply, {:ok, %{received: received, sent: sent}}, socket}
   end
 
+  def handle_in("ledger_rows", %{"topic" => topic}, socket) do
+    rows =
+      :ets.lookup(PhoenixDurableChannel.Stream.DurableStreams, topic) ++
+        :ets.lookup(PhoenixDurableChannel.Stream.DurableStreams, topic <> "/replies")
+
+    {:reply, {:ok, %{rows: length(rows)}}, socket}
+  end
+
   def handle_in("handled", _payload, socket),
     do: {:reply, {:ok, %{handled: TestServer.Joins.count("handled:" <> socket.topic)}}, socket}
 

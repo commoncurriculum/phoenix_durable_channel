@@ -10,25 +10,39 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   @impl GenServer
   def init(_options) do
     :ets.new(@table, [:named_table, :public, write_concurrency: true])
-    {:ok, %{channels: %{}}}
+    {:ok, %{channels: %{}, counts: %{}}}
   end
 
   @impl GenServer
-  def handle_call({:watch, topic, channel}, _from, state) do
-    if not Map.has_key?(state.channels, channel), do: Process.monitor(channel)
-    {:reply, :ok, put_in(state, [:channels, channel], topic)}
+  def handle_cast({:watch, topic, channel}, state) do
+    if Map.has_key?(state.channels, channel) do
+      {:noreply, state}
+    else
+      Process.monitor(channel)
+
+      {:noreply,
+       %{
+         state
+         | channels: Map.put(state.channels, channel, topic),
+           counts: Map.update(state.counts, topic, 1, &(&1 + 1))
+       }}
+    end
   end
 
   @impl GenServer
   def handle_info({:DOWN, _ref, :process, channel, _reason}, state) do
-    {topic, channels} = Map.pop(state.channels, channel)
+    topic = Map.fetch!(state.channels, channel)
+    channels = Map.delete(state.channels, channel)
 
-    if topic not in Map.values(channels) do
-      :ets.delete(@table, topic)
-      :ets.delete(@table, replies(topic))
+    case Map.fetch!(state.counts, topic) do
+      1 ->
+        :ets.delete(@table, topic)
+        :ets.delete(@table, replies(topic))
+        {:noreply, %{state | channels: channels, counts: Map.delete(state.counts, topic)}}
+
+      count ->
+        {:noreply, %{state | channels: channels, counts: Map.put(state.counts, topic, count - 1)}}
     end
-
-    {:noreply, %{state | channels: channels}}
   end
 
   @impl PhoenixDurableChannel.Stream
@@ -71,20 +85,25 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   end
 
   def read(topic) do
-    kept = read_to_end(topic, kept(topic) || create(topic))
+    known =
+      case kept(topic) do
+        nil ->
+          Req.put!(url(topic),
+            headers: [
+              authorization: "Bearer " <> token("write", topic),
+              content_type: "application/json"
+            ]
+          )
+
+          %{given: 0, offset: "-1", last: 0}
+
+        kept ->
+          kept
+      end
+
+    kept = read_to_end(topic, known)
     :ets.insert(@table, {topic, kept})
     kept
-  end
-
-  def create(topic) do
-    Req.put!(url(topic),
-      headers: [
-        authorization: "Bearer " <> token("write", topic),
-        content_type: "application/json"
-      ]
-    )
-
-    %{given: 0, offset: "-1", last: 0}
   end
 
   def read_to_end(topic, kept) do
@@ -118,7 +137,10 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   def replies(topic), do: topic <> "/replies"
 
   @impl PhoenixDurableChannel.Ledger
-  def received(socket), do: read(replies(socket.topic)).last
+  def received(socket) do
+    GenServer.cast(__MODULE__, {:watch, socket.topic, self()})
+    read(replies(socket.topic)).last
+  end
 
   @impl PhoenixDurableChannel.Ledger
   def put_received(socket, number, {status, response}) do
@@ -150,7 +172,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
 
   @impl PhoenixDurableChannel.Stream
   def reader(socket) do
-    :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})
+    GenServer.cast(__MODULE__, {:watch, socket.topic, self()})
     config = config()
     path = "/v1/stream/#{config[:project]}/#{URI.encode_www_form(socket.topic)}"
     kept = read(socket.topic)
