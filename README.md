@@ -143,7 +143,7 @@ and in `lib/my_app/application.ex`:
 children = [PhoenixDurableChannel.Stream.DurableStreams, MyAppWeb.Endpoint]
 ```
 
-Each node keeps where it read each topic's streams to while a channel has the topic, and for `forget_after` (five minutes by default, `{PhoenixDurableChannel.Stream.DurableStreams, forget_after: :timer.minutes(5)}`) after the topic's last channel leaves, so a reconnect does not read the streams again from the start.
+Each node keeps where it read each topic's streams to, and where its recent replies are, while a channel has the topic and for `keep_offsets_for` (five minutes by default, `{PhoenixDurableChannel.Stream.DurableStreams, keep_offsets_for: :timer.minutes(5)}`) after the topic's last channel leaves. So a reconnect to the same node does not read the streams again from the start, and a push sent again is looked up from near its reply, on any node, after one read of the replies. Forgetting drops only this cache, never the ledger.
 
 ### 2c. The channel: one `use` line
 

@@ -557,23 +557,39 @@ describe("with the memory store, whose kept messages and replies the test app ca
   })
 })
 
-test("a node keeps what it read of a Durable Streams ledger while the topic's channel is away, and forgets it once the topic has had no channel for forget_after, whatever the stream", async () => {
+test("a node reads a Durable Streams ledger from its start once while the topic's channel comes and goes, and again once the topic has had no channel for keep_offsets_for since its last leave, whatever the stream", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()
   const room = socket.channel(durableTopic("asks"))
   await join(room)
-  const name = durableTopic("rows")
-  const rows = async () =>
-    ((await answer(room.push("ledger_rows", { topic: name }))).response as { rows: number }).rows
+  const name = durableTopic("cold")
+  const readsFromStart = async () =>
+    (
+      (await answer(room.push("count", { key: `durable_streams_read:${name}/replies@-1` })))
+        .response as { count: number }
+    ).count
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const joinAndLeave = async () => {
+    const channel = socket.channel(name, { ledger: "durable-streams" }, { durable: true })
+    await join(channel)
+    expect(await answer(channel.push("ledger"))).toMatchObject({ response: { received: 1 } })
+    await answer(channel.leave())
+  }
   const first = socket.channel(name, { ledger: "durable-streams" }, { durable: true })
   await join(first)
   await answer(first.push("action", { body: "1" }, { durable: true }))
-  expect(await rows()).toBe(1)
-
   await answer(first.leave())
-  await new Promise((resolve) => setTimeout(resolve, 500))
-  expect(await rows()).toBe(1)
-  await expect.poll(rows, { timeout: 5000 }).toBe(0)
+  expect(await readsFromStart()).toBe(1)
+
+  await pause(1000)
+  await joinAndLeave()
+  await pause(1300)
+  await joinAndLeave()
+  expect(await readsFromStart()).toBe(1)
+
+  await pause(2500)
+  await joinAndLeave()
+  expect(await readsFromStart()).toBe(2)
 })
 
 test("a Memory ledger keeps what a joined channel received however long the channel stays idle, whatever the stream", async () => {

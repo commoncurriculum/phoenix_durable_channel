@@ -23,6 +23,7 @@ config :phoenix_durable_channel, PhoenixDurableChannel.Stream.Mongo,
   replies: "replies"
 
 config :phoenix_durable_channel, PhoenixDurableChannel.Stream.DurableStreams,
-  url: "http://127.0.0.1:4402",
+  url: "http://127.0.0.1:#{System.get_env("PORT", "4400")}/durable-streams",
+  reader_url: "http://127.0.0.1:4402",
   project: "phoenix-durable-channel",
   signing_secret: "phoenix-durable-channel-signing-secret"

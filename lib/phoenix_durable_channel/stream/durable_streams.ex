@@ -16,7 +16,8 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
      %{
        channels: %{},
        counts: %{},
-       forget_after: Keyword.get(options, :forget_after, :timer.minutes(5))
+       forgets: %{},
+       keep_offsets_for: Keyword.get(options, :keep_offsets_for, :timer.minutes(5))
      }}
   end
 
@@ -31,7 +32,8 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
        %{
          state
          | channels: Map.put(state.channels, channel, topic),
-           counts: Map.update(state.counts, topic, 1, &(&1 + 1))
+           counts: Map.update(state.counts, topic, 1, &(&1 + 1)),
+           forgets: Map.delete(state.forgets, topic)
        }}
     end
   end
@@ -40,21 +42,28 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   def handle_info({:DOWN, _reference, :process, channel, _reason}, state) do
     topic = Map.fetch!(state.channels, channel)
     count = Map.fetch!(state.counts, topic) - 1
-    if count == 0, do: Process.send_after(self(), {:forget, topic}, state.forget_after)
+    state = %{state | channels: Map.delete(state.channels, channel)}
 
-    {:noreply,
-     %{
-       state
-       | channels: Map.delete(state.channels, channel),
-         counts: Map.put(state.counts, topic, count)
-     }}
+    if count == 0 do
+      reference = make_ref()
+      Process.send_after(self(), {:forget, topic, reference}, state.keep_offsets_for)
+
+      {:noreply,
+       %{
+         state
+         | counts: Map.delete(state.counts, topic),
+           forgets: Map.put(state.forgets, topic, reference)
+       }}
+    else
+      {:noreply, %{state | counts: Map.put(state.counts, topic, count)}}
+    end
   end
 
-  def handle_info({:forget, topic}, state) do
-    if Map.get(state.counts, topic) == 0 do
+  def handle_info({:forget, topic, reference}, state) do
+    if Map.get(state.forgets, topic) == reference do
       :ets.delete(@table, topic)
       :ets.delete(@table, replies(topic))
-      {:noreply, %{state | counts: Map.delete(state.counts, topic)}}
+      {:noreply, %{state | forgets: Map.delete(state.forgets, topic)}}
     else
       {:noreply, state}
     end
@@ -131,11 +140,17 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
       |> Jason.decode!()
       |> Enum.reduce(kept.last, fn message, last -> max(last, message["number"]) end)
 
+    offset = hd(Req.Response.get_header(response, "stream-next-offset"))
+
     read = %{
       kept
-      | offset: hd(Req.Response.get_header(response, "stream-next-offset")),
+      | offset: offset,
         last: last,
-        given: last
+        given: last,
+        offsets:
+          kept.offsets
+          |> Map.put(last, offset)
+          |> Map.reject(fn {number, _offset} -> number <= last - @replies_kept end)
     }
 
     if Req.Response.get_header(response, "stream-up-to-date") == ["true"],
@@ -168,7 +183,10 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     offsets =
       if offset == :taken,
         do: kept.offsets,
-        else: kept.offsets |> Map.put(number, offset) |> Map.delete(number - @replies_kept)
+        else:
+          kept.offsets
+          |> Map.put(number, offset)
+          |> Map.reject(fn {kept_number, _offset} -> kept_number <= number - @replies_kept end)
 
     :ets.insert(@table, {topic, %{kept | last: max(kept.last, number), offsets: offsets}})
     :ok
@@ -177,7 +195,14 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   @impl PhoenixDurableChannel.Ledger
   def reply(socket, number) do
     topic = replies(socket.topic)
-    find(topic, Map.get((kept(topic) || read(topic)).offsets, number - 1, "-1"), number)
+
+    offset =
+      (kept(topic) || read(topic)).offsets
+      |> Enum.filter(fn {before, _offset} -> before < number end)
+      |> Enum.max_by(fn {before, _offset} -> before end, fn -> {0, "-1"} end)
+      |> elem(1)
+
+    find(topic, offset, number)
   end
 
   def find(topic, offset, number) do
