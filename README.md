@@ -128,6 +128,8 @@ children = [
 ]
 ```
 
+The library never creates a stream, so make the basin with `create_stream_on_append` and `create_stream_on_read` on. On a basin without them every durable join fails, because the topic's stream is not found.
+
 With Durable Streams on Durable Objects, in `config/runtime.exs`:
 
 ```elixir
@@ -219,10 +221,10 @@ A durable push is answered `"timeout"` only when its channel is closed (`channel
 
 ### 2e. Deploying it
 
-- **Pages still on phoenix.js keep working.** They speak V2 frames without a sixth slot, which the serializer reads as before, and channels they join without `phx_durable` behave as plain Phoenix channels.
+- **Pages still on phoenix.js keep working.** They speak V2 frames without a sixth slot, which the serializer reads as before, and channels they join without `phx_durable` behave as plain Phoenix channels: `push_durable/3` still appends to the stream, and pushes the message to them as a plain push. So do clients on Phoenix's V1 serializer.
 - **A new page that reaches an old pod waits.** An old pod answers its durable join without `phx_durable: true`; the client treats that join as not joined, keeps its durable pushes, and joins again after a backoff until a pod with this library answers.
 - **Upgrading from a version of this library that answered the durable join with `phx_reader` is a breaking change.** This version answers `phx_durable: true` and pushes `phx_reader` after the join. A page loaded before the deploy treats the new reply as not joined and joins again until it is reloaded, its durable pushes waiting. Deploy it when pages can be reloaded, or reload them.
-- **Upgrading from a version of this library whose durable pushes carried no epoch is a breaking change.** A page loaded before the deploy can't decode a push with an epoch, so it gets none of its durable messages from a new pod; a new page reading through the channel from a pod still on that version delivers none of them either, and reports them as passed. Deploy the server and the client together when pages can be reloaded, or reload them.
+- **Upgrading from a version of this library whose durable pushes carried no epoch is a breaking change.** A page loaded before the deploy can't decode a push with an epoch, so it gets none of its durable messages from a new pod; a new page reading through the channel from a pod still on that version delivers none of them either, firing `phx_skipped` and logging that the store no longer has them. The old page's client throws a `ParseError` for each push it can't decode. Deploy the server and the client together when pages can be reloaded, or reload them.
 
 ## Differences from phoenix.js 1.7
 
@@ -232,7 +234,7 @@ The calls and their arguments are the same. The behavior differs where phoenix.j
 - A push already sent when the connection or the channel drops is answered `"timeout"` at once, not after its full timeout.
 - A join that times out sends a leave for that join, so the server does not keep a channel process behind.
 - A late reply to an old join is ignored, and a newer `socket.channel()` on the same topic closes the older object.
-- A lost LongPoll session (HTTP 410) closes the connection, so channels rejoin on the new session. LongPoll fallback is remembered per socket, and WebSocket is retried after `websocketRetryAfterMs`.
+- A lost LongPoll session (HTTP 410) closes the connection, so channels rejoin on the new session. LongPoll fallback is remembered per socket, and WebSocket is retried after `websocketRetryAfterMs`; the `sessionStorage` option is accepted and not used.
 - Presence keys such as `"toString"` or `"__proto__"` are ordinary keys.
 - `heartbeatTimeoutMs` (default 10 s) is separate from the heartbeat interval.
 
