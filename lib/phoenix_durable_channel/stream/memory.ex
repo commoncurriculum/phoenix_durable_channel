@@ -6,9 +6,6 @@ defmodule PhoenixDurableChannel.Stream.Memory do
 
   @replies_kept 64
 
-  @impl PhoenixDurableChannel.Stream
-  def delivery, do: :channel
-
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
   @impl GenServer

@@ -15,6 +15,15 @@ export const sleep = fromPromise<void, { ms: number | null }>(({ input, signal }
   Effect.runPromise(input.ms === null ? Effect.never : Effect.sleep(input.ms), { signal }),
 )
 
+export const backoff = (delay: (tries: number) => number) =>
+  fromPromise<void, { tries: number }>(({ input, signal }) =>
+    Effect.runPromise(Effect.sleep(delay(input.tries)), { signal }),
+  )
+
+export type Data<T> = {
+  [K in keyof T]: T[K] extends (...args: never[]) => unknown ? never : T[K]
+}
+
 export function startMachine<Logic extends AnyActorLogic>(
   logic: Logic,
   input: InputFrom<Logic>,
@@ -22,15 +31,9 @@ export function startMachine<Logic extends AnyActorLogic>(
   handle: (event: EmittedFrom<Logic>) => void,
 ): Actor<Logic> {
   const actor = createActor(logic, { input })
-  let observed: SnapshotFrom<Logic> | null = null
-  const look = (snapshot: SnapshotFrom<Logic>) => {
-    if (snapshot === observed) return
-    observed = snapshot
-    observe(snapshot)
-  }
-  actor.subscribe(look)
+  actor.subscribe(observe)
   actor.on("*", (event) => {
-    look(actor.getSnapshot())
+    observe(actor.getSnapshot())
     handle(event)
   })
   return actor.start()
@@ -74,6 +77,8 @@ export type TransportEvent =
 export type TransportCommand =
   { type: "SEND"; data: string | ArrayBuffer } | { type: "CLOSE"; code: number; reason: string }
 
+export type TransportKind = "websocket" | "longpoll"
+
 export interface TransportInput {
   transport: TransportConstructor
   url: string
@@ -82,42 +87,44 @@ export interface TransportInput {
   timeout: number
 }
 
-export const transport = fromCallback<TransportCommand, TransportInput, TransportEvent>(
-  ({ input, sendBack, receive }) => {
-    const connection = Effect.acquireRelease(
-      Effect.sync(() => {
-        const connection = new input.transport(input.url, input.protocols)
-        connection.binaryType = input.binaryType
-        if ("timeout" in connection) connection.timeout = input.timeout
-        connection.onopen = () => sendBack({ type: "TRANSPORT_OPEN" })
-        connection.onerror = (error: unknown) => sendBack({ type: "TRANSPORT_ERROR", error })
-        connection.onmessage = (event: { data: EncodedMessage }) =>
-          sendBack({ type: "TRANSPORT_MESSAGE", data: event.data })
-        connection.onclose = (event: CloseDetails) =>
-          sendBack({
-            type: "TRANSPORT_CLOSE",
-            code: event.code,
-            reason: event.reason,
-            wasClean: event.wasClean,
-          })
-        receive((command) => {
-          if (command.type === "SEND") connection.send(command.data)
-          if (command.type === "CLOSE") connection.close(command.code, command.reason)
-        })
-        return connection
-      }),
-      (connection) =>
+export const transport = (connect: (kind: TransportKind) => TransportInput) =>
+  fromCallback<TransportCommand, { kind: TransportKind }, TransportEvent>(
+    ({ input: { kind }, sendBack, receive }) => {
+      const input = connect(kind)
+      const connection = Effect.acquireRelease(
         Effect.sync(() => {
-          connection.onopen = ignore
-          connection.onerror = ignore
-          connection.onmessage = ignore
-          connection.onclose = ignore
-          connection.close(1000, "client closed")
+          const connection = new input.transport(input.url, input.protocols)
+          connection.binaryType = input.binaryType
+          if ("timeout" in connection) connection.timeout = input.timeout
+          connection.onopen = () => sendBack({ type: "TRANSPORT_OPEN" })
+          connection.onerror = (error: unknown) => sendBack({ type: "TRANSPORT_ERROR", error })
+          connection.onmessage = (event: { data: EncodedMessage }) =>
+            sendBack({ type: "TRANSPORT_MESSAGE", data: event.data })
+          connection.onclose = (event: CloseDetails) =>
+            sendBack({
+              type: "TRANSPORT_CLOSE",
+              code: event.code,
+              reason: event.reason,
+              wasClean: event.wasClean,
+            })
+          receive((command) => {
+            if (command.type === "SEND") connection.send(command.data)
+            if (command.type === "CLOSE") connection.close(command.code, command.reason)
+          })
+          return connection
         }),
-    )
-    const fiber = Effect.runFork(Effect.scoped(Effect.andThen(connection, Effect.never)))
-    return () => {
-      Effect.runFork(Fiber.interrupt(fiber))
-    }
-  },
-)
+        (connection) =>
+          Effect.sync(() => {
+            connection.onopen = ignore
+            connection.onerror = ignore
+            connection.onmessage = ignore
+            connection.onclose = ignore
+            connection.close(1000, "client closed")
+          }),
+      )
+      const fiber = Effect.runFork(Effect.scoped(Effect.andThen(connection, Effect.never)))
+      return () => {
+        Effect.runFork(Fiber.interrupt(fiber))
+      }
+    },
+  )

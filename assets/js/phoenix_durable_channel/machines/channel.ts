@@ -1,29 +1,24 @@
 import { assign, emit, setup } from "xstate"
-import { sleep } from "../actors"
+import { backoff, sleep, type Data } from "../actors"
 import type { ChannelState } from "../constants"
 
-export interface ChannelSettings {
-  timeout(): number
-  socketIsOpen(): boolean
-  makeRef(): string
-  rejoinAfterMs(tries: number): number
-}
-
 type ChannelEvent =
-  | { type: "JOIN" }
-  | { type: "LEAVE" }
+  | { type: "JOIN"; timeout: number }
+  | { type: "JOIN_SENT"; ref: string }
+  | { type: "LEAVE"; timeout: number }
+  | { type: "LEAVE_SENT"; ref: string }
   | { type: "SOCKET_OPEN" }
   | { type: "SOCKET_CLOSED" }
-  | { type: "JOIN_REPLY"; status: string; response: unknown }
-  | { type: "JOIN_REFUSED"; response: unknown }
-  | { type: "LEAVE_REPLY" }
+  | { type: "JOIN_REPLY"; ref: string | null; status: string; response: unknown }
+  | { type: "JOIN_REFUSED"; ref: string | null; response: unknown }
+  | { type: "LEAVE_REPLY"; ref: string | null }
   | { type: "SERVER_ERROR"; reason: unknown }
   | { type: "SERVER_CLOSE"; reason: unknown }
   | { type: "REPLACED" }
 
 export type ChannelEmitted =
-  | { type: "join"; joinRef: string | null }
-  | { type: "leave"; joinRef: string | null; leaveRef: string | null }
+  | { type: "join" }
+  | { type: "leave"; joinRef: string | null }
   | { type: "answerJoin"; status: "ok" | "error" | "timeout"; response: unknown }
   | { type: "answerLeave"; status: "ok" | "timeout" }
   | { type: "joined"; response: unknown }
@@ -31,28 +26,37 @@ export type ChannelEmitted =
   | { type: "errored"; reason: unknown }
   | { type: "closed"; reason: unknown }
 
-interface ChannelContext {
-  settings: ChannelSettings
+type ChannelContext = Data<{
+  timeout: number
+  socketOpen: boolean
   joinRef: string | null
   leaveRef: string | null
   rejoinTries: number
   joinResponse: unknown
-}
+}>
 
 export const channelMachine = setup({
   types: {
     context: {} as ChannelContext,
-    input: {} as { settings: ChannelSettings },
+    input: {} as { timeout: number; socketOpen: boolean },
     events: {} as ChannelEvent,
     emitted: {} as ChannelEmitted,
     tags: {} as ChannelState,
   },
-  actors: { sleep },
+  actors: { sleep, waitToRejoin: backoff(Number) },
   guards: {
-    socketIsOpen: ({ context }) => context.settings.socketIsOpen(),
-    replyIsOk: ({ event }) => event.type === "JOIN_REPLY" && event.status === "ok",
+    socketIsOpen: ({ context }) => context.socketOpen,
+    answersJoin: ({ context, event }) =>
+      (event.type === "JOIN_REPLY" || event.type === "JOIN_REFUSED") &&
+      event.ref === context.joinRef,
+    acceptsJoin: ({ context, event }) =>
+      event.type === "JOIN_REPLY" && event.ref === context.joinRef && event.status === "ok",
+    answersLeave: ({ context, event }) =>
+      event.type === "LEAVE_REPLY" && event.ref === context.leaveRef,
   },
   actions: {
+    socketOpened: assign({ socketOpen: true }),
+    socketClosed: assign({ socketOpen: false }),
     lose: emit({ type: "lost" }),
     error: emit(({ event }) => ({
       type: "errored" as const,
@@ -63,16 +67,13 @@ export const channelMachine = setup({
       ...params,
     })),
     answerLeave: emit((_, status: "ok" | "timeout") => ({ type: "answerLeave" as const, status })),
-    leaveJoin: emit(({ context }) => ({
-      type: "leave" as const,
-      joinRef: context.joinRef,
-      leaveRef: context.settings.makeRef(),
-    })),
+    leaveJoin: emit(({ context }) => ({ type: "leave" as const, joinRef: context.joinRef })),
   },
 }).createMachine({
   id: "channel",
   context: ({ input }) => ({
-    settings: input.settings,
+    timeout: input.timeout,
+    socketOpen: input.socketOpen,
     joinRef: null,
     leaveRef: null,
     rejoinTries: 0,
@@ -81,12 +82,16 @@ export const channelMachine = setup({
   initial: "unjoined",
   on: {
     REPLACED: { target: ".closed" },
+    SOCKET_OPEN: { actions: "socketOpened" },
+    SOCKET_CLOSED: { actions: "socketClosed" },
+    JOIN_SENT: { actions: assign({ joinRef: ({ event }) => event.ref }) },
+    LEAVE_SENT: { actions: assign({ leaveRef: ({ event }) => event.ref }) },
   },
   states: {
     unjoined: {
       tags: "closed",
       on: {
-        JOIN: "member",
+        JOIN: { target: "member", actions: assign({ timeout: ({ event }) => event.timeout }) },
         LEAVE: { target: "closed", actions: { type: "answerLeave", params: "ok" } },
       },
     },
@@ -97,7 +102,10 @@ export const channelMachine = setup({
           tags: "joining",
           initial: "checkingSocket",
           on: {
-            LEAVE: "leaving",
+            LEAVE: {
+              target: "leaving",
+              actions: assign({ timeout: ({ event }) => event.timeout }),
+            },
             SERVER_CLOSE: "#channel.closed",
             SERVER_ERROR: { target: "errored", actions: "error" },
           },
@@ -109,16 +117,13 @@ export const channelMachine = setup({
               ],
             },
             awaitingSocket: {
-              on: { SOCKET_OPEN: "awaitingReply" },
+              on: { SOCKET_OPEN: { target: "awaitingReply", actions: "socketOpened" } },
             },
             awaitingReply: {
-              entry: [
-                assign({ joinRef: ({ context }) => context.settings.makeRef() }),
-                emit(({ context }) => ({ type: "join" as const, joinRef: context.joinRef })),
-              ],
+              entry: emit({ type: "join" }),
               invoke: {
                 src: "sleep",
-                input: ({ context }) => ({ ms: context.settings.timeout() }),
+                input: ({ context }) => ({ ms: context.timeout }),
                 onDone: {
                   target: "#channel.member.errored",
                   actions: [
@@ -129,6 +134,7 @@ export const channelMachine = setup({
               },
               on: {
                 JOIN_REFUSED: {
+                  guard: "answersJoin",
                   target: "#channel.member.errored",
                   actions: [
                     {
@@ -140,11 +146,12 @@ export const channelMachine = setup({
                 },
                 JOIN_REPLY: [
                   {
-                    guard: "replyIsOk",
+                    guard: "acceptsJoin",
                     target: "#channel.member.joined",
                     actions: assign({ joinResponse: ({ event }) => event.response }),
                   },
                   {
+                    guard: "answersJoin",
                     target: "#channel.member.errored",
                     actions: {
                       type: "answerJoin",
@@ -154,7 +161,7 @@ export const channelMachine = setup({
                 ],
                 SOCKET_CLOSED: {
                   target: "#channel.member.errored",
-                  actions: "error",
+                  actions: ["socketClosed", "error"],
                 },
               },
             },
@@ -171,8 +178,11 @@ export const channelMachine = setup({
             },
           ],
           on: {
-            LEAVE: "leaving",
-            SOCKET_CLOSED: { target: "errored", actions: "error" },
+            LEAVE: {
+              target: "leaving",
+              actions: assign({ timeout: ({ event }) => event.timeout }),
+            },
+            SOCKET_CLOSED: { target: "errored", actions: ["socketClosed", "error"] },
             SERVER_ERROR: { target: "errored", actions: "error" },
             SERVER_CLOSE: "#channel.closed",
           },
@@ -185,7 +195,7 @@ export const channelMachine = setup({
             LEAVE: { target: "#channel.closed", actions: { type: "answerLeave", params: "ok" } },
             SOCKET_OPEN: {
               target: "joining",
-              actions: assign({ rejoinTries: 0 }),
+              actions: ["socketOpened", assign({ rejoinTries: 0 })],
             },
           },
           states: {
@@ -198,10 +208,8 @@ export const channelMachine = setup({
             awaitingSocket: {},
             awaitingRejoin: {
               invoke: {
-                src: "sleep",
-                input: ({ context }) => ({
-                  ms: context.settings.rejoinAfterMs(context.rejoinTries + 1),
-                }),
+                src: "waitToRejoin",
+                input: ({ context }) => ({ tries: context.rejoinTries + 1 }),
                 onDone: {
                   target: "#channel.member.joining",
                   actions: assign({
@@ -209,7 +217,7 @@ export const channelMachine = setup({
                   }),
                 },
               },
-              on: { SOCKET_CLOSED: "awaitingSocket" },
+              on: { SOCKET_CLOSED: { target: "awaitingSocket", actions: "socketClosed" } },
             },
           },
         },
@@ -225,17 +233,10 @@ export const channelMachine = setup({
               ],
             },
             awaitingReply: {
-              entry: [
-                assign({ leaveRef: ({ context }) => context.settings.makeRef() }),
-                emit(({ context }) => ({
-                  type: "leave" as const,
-                  joinRef: context.joinRef,
-                  leaveRef: context.leaveRef,
-                })),
-              ],
+              entry: emit(({ context }) => ({ type: "leave" as const, joinRef: context.joinRef })),
               invoke: {
                 src: "sleep",
-                input: ({ context }) => ({ ms: context.settings.timeout() }),
+                input: ({ context }) => ({ ms: context.timeout }),
                 onDone: {
                   target: "#channel.closed",
                   actions: { type: "answerLeave", params: "timeout" },
@@ -243,12 +244,13 @@ export const channelMachine = setup({
               },
               on: {
                 LEAVE_REPLY: {
+                  guard: "answersLeave",
                   target: "#channel.closed",
                   actions: { type: "answerLeave", params: "ok" },
                 },
                 SOCKET_CLOSED: {
                   target: "#channel.closed",
-                  actions: { type: "answerLeave", params: "ok" },
+                  actions: ["socketClosed", { type: "answerLeave", params: "ok" }],
                 },
               },
             },

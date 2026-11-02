@@ -1,7 +1,14 @@
 import type { ActivityTracker } from "@supergrain/activity"
 import { createReactive } from "@supergrain/kernel"
-import type { Actor } from "xstate"
-import { startMachine, tagged, type CloseDetails, type TransportConstructor } from "./actors"
+import { fromCallback, type Actor } from "xstate"
+import {
+  backoff,
+  startMachine,
+  tagged,
+  transport,
+  type CloseDetails,
+  type TransportConstructor,
+} from "./actors"
 import { Channel, type ChannelOptions } from "./channel"
 import {
   AUTH_TOKEN_PREFIX,
@@ -12,7 +19,12 @@ import {
   type ConnectionState,
 } from "./constants"
 import { LongPoll } from "./longpoll"
-import { socketMachine, type SocketEmitted, type TransportKind } from "./machines/socket"
+import {
+  socketMachine,
+  type SocketEmitted,
+  type SocketEvent,
+  type TransportKind,
+} from "./machines/socket"
 import { Serializer, type EncodedMessage, type Message } from "./serializer"
 import { appendParams, type Params } from "./url"
 
@@ -111,22 +123,36 @@ export class Socket {
       transport: kind,
       online: true,
     })
+    const activity = options.activity ?? null
     this.actor = startMachine(
-      socketMachine,
+      socketMachine.provide({
+        actors: {
+          transport: transport((transportKind) => ({
+            transport: transportKind === "longpoll" ? LongPoll : this.webSocket,
+            url: this.endPointURL(),
+            protocols:
+              this.authToken === null
+                ? undefined
+                : ["phoenix", `${AUTH_TOKEN_PREFIX}${btoa(this.authToken()).replace(/=/g, "")}`],
+            binaryType: this.binaryType,
+            timeout: this.longpollerTimeout,
+          })),
+          watchActivity: fromCallback<SocketEvent, void, SocketEvent>(({ sendBack }) => {
+            if (activity === null) return
+            sendBack({ type: "ACTIVITY", status: activity.state.status })
+            const stops = (["active", "idle", "hidden"] as const).map((status) =>
+              activity.on(status, () => sendBack({ type: "ACTIVITY", status })),
+            )
+            return () => {
+              for (const stop of stops) stop()
+            }
+          }),
+          waitToReconnect: backoff((tries) => this.reconnectAfterMs(tries)),
+        },
+      }),
       {
         transport: kind,
-        settings: {
-          url: () => this.endPointURL(),
-          protocols: () =>
-            this.authToken === null
-              ? undefined
-              : ["phoenix", `${AUTH_TOKEN_PREFIX}${btoa(this.authToken()).replace(/=/g, "")}`],
-          binaryType: this.binaryType,
-          transportFor: (transport) => (transport === "longpoll" ? LongPoll : this.webSocket),
-          longpollerTimeout: this.longpollerTimeout,
-          activity: options.activity ?? null,
-          makeRef: () => this.makeRef(),
-          reconnectAfterMs: (tries) => this.reconnectAfterMs(tries),
+        timing: {
           longPollFallbackMs: options.longPollFallbackMs ?? null,
           heartbeatIntervalMs: this.heartbeatIntervalMs,
           heartbeatTimeoutMs: options.heartbeatTimeoutMs ?? 10_000,
@@ -295,10 +321,8 @@ export class Socket {
 
   private handle(event: SocketEmitted): void {
     switch (event.type) {
-      case "send":
-        return this.encode(event.message, (data) =>
-          this.actor.getSnapshot().children.transport?.send({ type: "SEND", data }),
-        )
+      case "encode":
+        return this.encode(event.message, (data) => this.actor.send({ type: "ENCODED", data }))
       case "buffered":
         return this.log("push", "buffered until the socket opens", event.message)
       case "opened":
@@ -335,13 +359,7 @@ export class Socket {
   private receive(message: Message): void {
     const { topic, event, payload, ref, join_ref } = message
     this.log("receive", `${topic} ${event} ${ref ?? ""} ${join_ref ?? ""}`, payload)
-    if (
-      topic === "phoenix" &&
-      ref !== null &&
-      ref === this.actor.getSnapshot().context.heartbeatRef
-    ) {
-      this.actor.send({ type: "HEARTBEAT_REPLY" })
-    }
+    if (topic === "phoenix" && ref !== null) this.actor.send({ type: "HEARTBEAT_REPLY", ref })
     for (const channel of this.channels)
       if (channel.isMember(message)) channel.receiveMessage(message)
     for (const entry of this.stateChangeCallbacks)

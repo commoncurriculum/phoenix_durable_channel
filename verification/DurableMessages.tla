@@ -230,7 +230,7 @@ ServerTakes ==
                /\ UNCHANGED <<ledgerVars, running>>
           ELSE IF m.num <= received - Kept \/ m.num > Len(replies)
           THEN /\ forgotten' = TRUE
-               /\ toClient' = Append(toClient, [k |-> "answer", id |-> m.id, status |-> "ok"])
+               /\ toClient' = Append(toClient, [k |-> "answer", id |-> m.id, status |-> "error"])
                /\ UNCHANGED <<received, known, replies, handled, running>>
           ELSE /\ toClient' = Append(toClient,
                                      [k |-> "answer", id |-> m.id, status |-> Historic(m.num)])

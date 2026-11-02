@@ -1,26 +1,21 @@
-import type { ActivityStatus, ActivityTracker } from "@supergrain/activity"
+import type { ActivityStatus } from "@supergrain/activity"
 import { assign, emit, enqueueActions, fromCallback, raise, sendTo, setup } from "xstate"
 import {
+  backoff,
+  ignore,
   sleep,
-  transport,
   type CloseDetails,
-  type TransportConstructor,
+  type Data,
+  type TransportCommand,
   type TransportEvent,
+  type TransportKind,
 } from "../actors"
 import type { ConnectionState } from "../constants"
 import type { EncodedMessage, Message } from "../serializer"
 
-export type TransportKind = "websocket" | "longpoll"
+export type { TransportKind }
 
-export interface SocketSettings {
-  url(): string
-  protocols(): Array<string> | undefined
-  binaryType: BinaryType
-  transportFor(kind: TransportKind): TransportConstructor
-  longpollerTimeout: number
-  activity: ActivityTracker | null
-  makeRef(): string
-  reconnectAfterMs(tries: number): number
+export interface SocketTiming {
   longPollFallbackMs: number | null
   heartbeatIntervalMs: number
   heartbeatTimeoutMs: number
@@ -30,12 +25,13 @@ export interface SocketSettings {
   closeTimeoutMs: number
 }
 
-type SocketEvent =
+export type SocketEvent =
   | TransportEvent
   | { type: "CONNECT" }
   | { type: "DISCONNECT"; code: number; reason: string }
   | { type: "PUSH"; message: Message }
-  | { type: "HEARTBEAT_REPLY" }
+  | { type: "ENCODED"; data: string | ArrayBuffer }
+  | { type: "HEARTBEAT_REPLY"; ref: string }
   | { type: "ACTIVITY"; status: ActivityStatus }
   | { type: "SUSPEND" }
   | { type: "CONNECTION_OPENED" }
@@ -43,7 +39,7 @@ type SocketEvent =
   | { type: "REPLACE_TRANSPORT"; transport: TransportKind }
 
 export type SocketEmitted =
-  | { type: "send"; message: Message }
+  | { type: "encode"; message: Message }
   | { type: "buffered"; message: Message }
   | { type: "opened" }
   | { type: "connectionLost" }
@@ -52,32 +48,19 @@ export type SocketEmitted =
   | { type: "message"; data: EncodedMessage }
   | { type: "disconnected" }
 
-const watchActivity = fromCallback<SocketEvent, { activity: ActivityTracker | null }, SocketEvent>(
-  ({ input, sendBack }) => {
-    const { activity } = input
-    if (activity === null) return
-    sendBack({ type: "ACTIVITY", status: activity.state.status })
-    const stops = (["active", "idle", "hidden"] as const).map((status) =>
-      activity.on(status, () => sendBack({ type: "ACTIVITY", status })),
-    )
-    return () => {
-      for (const stop of stops) stop()
-    }
-  },
-)
-
-interface SocketContext {
-  settings: SocketSettings
+type SocketContext = Data<{
+  timing: SocketTiming
   transport: TransportKind
   webSocketOpened: boolean
   fellBack: boolean
   tries: number
+  heartbeats: number
   heartbeatRef: string | null
   closeRequest: { code: number; reason: string }
-  buffer: Array<Message>
+  buffer: ReadonlyArray<Message>
   closeWasClean: boolean
   establishedConnections: number
-}
+}>
 
 const closeDetails = ({ code, reason, wasClean }: CloseDetails): CloseDetails => ({
   code,
@@ -100,22 +83,26 @@ const heartbeatTimedOut: CloseDetails = {
 export const socketMachine = setup({
   types: {
     context: {} as SocketContext,
-    input: {} as {
-      settings: SocketSettings
-      transport: TransportKind
-    },
+    input: {} as { timing: SocketTiming; transport: TransportKind },
     events: {} as SocketEvent,
     emitted: {} as SocketEmitted,
     tags: {} as ConnectionState,
   },
-  actors: { sleep, transport, watchActivity },
+  actors: {
+    sleep,
+    transport: fromCallback<TransportCommand, { kind: TransportKind }, TransportEvent>(ignore),
+    watchActivity: fromCallback<SocketEvent, void, SocketEvent>(ignore),
+    waitToReconnect: backoff(Number),
+  },
   guards: {
     canFallBack: ({ context }) =>
       context.transport === "websocket" &&
-      context.settings.longPollFallbackMs !== null &&
+      context.timing.longPollFallbackMs !== null &&
       !context.webSocketOpened,
     userIsActive: ({ event }) => event.type === "ACTIVITY" && event.status === "active",
     userIsAway: ({ event }) => event.type === "ACTIVITY" && event.status !== "active",
+    answersHeartbeat: ({ context, event }) =>
+      event.type === "HEARTBEAT_REPLY" && event.ref === context.heartbeatRef,
   },
   actions: {
     fallBack: assign({ transport: "longpoll", fellBack: true }),
@@ -134,11 +121,12 @@ export const socketMachine = setup({
   id: "socket",
   type: "parallel",
   context: ({ input }) => ({
-    settings: input.settings,
+    timing: input.timing,
     transport: input.transport,
     webSocketOpened: false,
     fellBack: false,
     tries: 0,
+    heartbeats: 0,
     heartbeatRef: null,
     closeRequest: { code: 1000, reason: "" },
     buffer: [],
@@ -159,11 +147,11 @@ export const socketMachine = setup({
           target: ".disconnected",
           actions: [
             "dropBuffer",
-            assign({
-              transport: ({ event }) => event.transport,
+            assign(({ event }) => ({
+              transport: event.transport,
               webSocketOpened: false,
               fellBack: false,
-            }),
+            })),
           ],
         },
       },
@@ -174,23 +162,14 @@ export const socketMachine = setup({
           on: { SUSPEND: {} },
         },
         engaged: {
-          invoke: {
-            src: "watchActivity",
-            input: ({ context }) => ({ activity: context.settings.activity }),
-          },
+          invoke: { src: "watchActivity" },
           initial: "live",
           states: {
             live: {
               invoke: {
                 id: "transport",
                 src: "transport",
-                input: ({ context }) => ({
-                  transport: context.settings.transportFor(context.transport),
-                  url: context.settings.url(),
-                  protocols: context.settings.protocols(),
-                  binaryType: context.settings.binaryType,
-                  timeout: context.settings.longpollerTimeout,
-                }),
+                input: ({ context }) => ({ kind: context.transport }),
               },
               initial: "connecting",
               on: {
@@ -253,7 +232,7 @@ export const socketMachine = setup({
                     input: ({ context }) => ({
                       ms:
                         context.transport === "websocket" && !context.webSocketOpened
-                          ? context.settings.longPollFallbackMs
+                          ? context.timing.longPollFallbackMs
                           : null,
                     }),
                     onDone: {
@@ -275,7 +254,8 @@ export const socketMachine = setup({
                       establishedConnections: ({ context }) => context.establishedConnections + 1,
                     }),
                     enqueueActions(({ context, enqueue }) => {
-                      for (const message of context.buffer) enqueue.emit({ type: "send", message })
+                      for (const message of context.buffer)
+                        enqueue.emit({ type: "encode", message })
                     }),
                     "dropBuffer",
                     emit({ type: "opened" }),
@@ -285,7 +265,7 @@ export const socketMachine = setup({
                   invoke: {
                     src: "sleep",
                     input: ({ context }) => ({
-                      ms: context.fellBack ? context.settings.websocketRetryAfterMs : null,
+                      ms: context.fellBack ? context.timing.websocketRetryAfterMs : null,
                     }),
                     onDone: {
                       target: "#socket.connection.engaged.live",
@@ -302,18 +282,26 @@ export const socketMachine = setup({
                   on: {
                     PUSH: {
                       actions: emit(({ event }) => ({
-                        type: "send" as const,
+                        type: "encode" as const,
                         message: event.message,
+                      })),
+                    },
+                    ENCODED: {
+                      actions: sendTo("transport", ({ event }) => ({
+                        type: "SEND" as const,
+                        data: event.data,
                       })),
                     },
                     DISCONNECT: {
                       target: "closing",
-                      actions: assign({
-                        closeRequest: ({ event }) => ({
-                          code: event.code,
-                          reason: event.reason,
+                      actions: [
+                        assign({
+                          closeRequest: ({ event }) => ({
+                            code: event.code,
+                            reason: event.reason,
+                          }),
                         }),
-                      }),
+                      ],
                     },
                   },
                   initial: "beating",
@@ -322,7 +310,7 @@ export const socketMachine = setup({
                       invoke: {
                         src: "sleep",
                         input: ({ context }) => ({
-                          ms: context.settings.heartbeatIntervalMs,
+                          ms: context.timing.heartbeatIntervalMs,
                         }),
                         onDone: "awaitingHeartbeat",
                       },
@@ -336,10 +324,11 @@ export const socketMachine = setup({
                     awaitingHeartbeat: {
                       entry: [
                         assign({
-                          heartbeatRef: ({ context }) => context.settings.makeRef(),
+                          heartbeats: ({ context }) => context.heartbeats + 1,
+                          heartbeatRef: ({ context }) => `heartbeat:${context.heartbeats + 1}`,
                         }),
                         emit(({ context }) => ({
-                          type: "send" as const,
+                          type: "encode" as const,
                           message: {
                             topic: "phoenix",
                             event: "heartbeat",
@@ -352,14 +341,14 @@ export const socketMachine = setup({
                       invoke: {
                         src: "sleep",
                         input: ({ context }) => ({
-                          ms: context.settings.heartbeatTimeoutMs,
+                          ms: context.timing.heartbeatTimeoutMs,
                         }),
                         onDone: {
                           target: "#socket.connection.engaged.waitingToReconnect",
                           actions: ["loseConnection", { type: "close", params: heartbeatTimedOut }],
                         },
                       },
-                      on: { HEARTBEAT_REPLY: "beating" },
+                      on: { HEARTBEAT_REPLY: { guard: "answersHeartbeat", target: "beating" } },
                     },
                   },
                 },
@@ -375,7 +364,7 @@ export const socketMachine = setup({
                   invoke: {
                     src: "sleep",
                     input: ({ context }) => ({
-                      ms: context.settings.closeTimeoutMs,
+                      ms: context.timing.closeTimeoutMs,
                     }),
                     onDone: "#socket.connection.disconnected",
                   },
@@ -409,10 +398,8 @@ export const socketMachine = setup({
                 raise({ type: "CONNECTION_LOST" }),
               ],
               invoke: {
-                src: "sleep",
-                input: ({ context }) => ({
-                  ms: context.settings.reconnectAfterMs(context.tries),
-                }),
+                src: "waitToReconnect",
+                input: ({ context }) => ({ tries: context.tries }),
                 onDone: "live",
               },
               on: { ACTIVITY: { guard: "userIsActive", target: "live" } },
@@ -435,7 +422,7 @@ export const socketMachine = setup({
           invoke: {
             src: "sleep",
             input: ({ context }) => ({
-              ms: context.settings.disconnectAfterInactiveMs,
+              ms: context.timing.disconnectAfterInactiveMs,
             }),
             onDone: { actions: raise({ type: "SUSPEND" }) },
           },
@@ -450,7 +437,7 @@ export const socketMachine = setup({
         goingOffline: {
           invoke: {
             src: "sleep",
-            input: ({ context }) => ({ ms: context.settings.offlineAfterMs }),
+            input: ({ context }) => ({ ms: context.timing.offlineAfterMs }),
             onDone: "offline",
           },
           on: { CONNECTION_OPENED: "online" },

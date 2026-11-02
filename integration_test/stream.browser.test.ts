@@ -287,9 +287,9 @@ test("a Durable Streams read after the last one, or after where the join said th
     new DurableStream({ url: String(reader["url"]), token: () => token }),
     1,
   )
-  await waitFor(() => fromTheStart.delivered.length === 2)
+  await waitFor(() => fromTheStart.delivered.length === 3)
   fromTheStart.stop()
-  expect(numbers(fromTheStart)).toEqual([2, 3])
+  expect(numbers(fromTheStart)).toEqual([1, 2, 3])
 
   const laterReader = (await answer(channel.push("phx_reader"))).response as PublishedReader
   expect(laterReader["last"]).toBe(3)

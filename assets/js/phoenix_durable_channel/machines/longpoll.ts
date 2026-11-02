@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { assign, emit, enqueueActions, fromPromise, setup } from "xstate"
-import { sleep, type CloseDetails } from "../actors"
+import { sleep, type CloseDetails, type Data } from "../actors"
 import { appendParams } from "../url"
 import { decodePollResponse } from "../wire"
 
@@ -47,28 +47,32 @@ const request = fromPromise<PollResponse, RequestInput>(({ input, signal }) =>
   ),
 )
 
-export interface LongPollSettings {
-  endpoint: string
-  authToken: string | null
-  timeout(): number
-}
-
 export type LongPollEmitted =
   | { type: "opened" }
   | { type: "message"; data: string }
   | { type: "errored"; error: unknown }
   | ({ type: "closed" } & CloseDetails)
 
-interface LongPollContext {
-  settings: LongPollSettings
-  token: string | null
-  batch: Array<string>
-  sending: Array<string>
+interface LongPollInput {
+  endpoint: string
+  authToken: string | null
+  timeout: number
 }
+
+type LongPollContext = Data<
+  LongPollInput & {
+    token: string | null
+    batch: ReadonlyArray<string>
+    sending: ReadonlyArray<string>
+  }
+>
 
 type Failure = { code: number; reason: string }
 
-type LongPollEvent = { type: "SEND"; frame: string } | ({ type: "CLOSE" } & CloseDetails)
+type LongPollEvent =
+  | { type: "SEND"; frame: string }
+  | { type: "TIMEOUT"; timeout: number }
+  | ({ type: "CLOSE" } & CloseDetails)
 
 const internalServerError: Failure = {
   code: 1011,
@@ -76,12 +80,12 @@ const internalServerError: Failure = {
 }
 
 const poll = (context: LongPollContext): RequestInput => ({
-  endpoint: context.settings.endpoint,
+  endpoint: context.endpoint,
   token: context.token,
-  authToken: context.settings.authToken,
+  authToken: context.authToken,
   method: "GET",
   body: null,
-  timeout: context.settings.timeout(),
+  timeout: context.timeout,
 })
 
 const pollFailures: Record<string, Failure> = {
@@ -97,7 +101,7 @@ const publishFailures: Record<string, Failure> = {
 export const longPollMachine = setup({
   types: {
     context: {} as LongPollContext,
-    input: {} as { settings: LongPollSettings },
+    input: {} as LongPollInput,
     events: {} as LongPollEvent,
     emitted: {} as LongPollEmitted,
     tags: {} as "connecting" | "open" | "closed",
@@ -133,7 +137,9 @@ export const longPollMachine = setup({
 }).createMachine({
   id: "longpoll",
   context: ({ input }) => ({
-    settings: input.settings,
+    endpoint: input.endpoint,
+    authToken: input.authToken,
+    timeout: input.timeout,
     token: null,
     batch: [],
     sending: [],
@@ -141,6 +147,7 @@ export const longPollMachine = setup({
   initial: "starting",
   on: {
     SEND: { actions: { type: "collect", params: ({ event }) => event.frame } },
+    TIMEOUT: { actions: assign({ timeout: ({ event }) => event.timeout }) },
     CLOSE: {
       target: ".closed",
       actions: emit(({ event }) => ({

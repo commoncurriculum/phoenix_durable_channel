@@ -98,6 +98,7 @@ test("LongPoll fails on a POST the server rejects or does not answer in time", a
   const open = async () => {
     const connection = new LongPoll(`${phoenixUrl}/socket/websocket?vsn=2.0.0`)
     expect(connection.readyState).toBe(WebSocket.CONNECTING)
+    expect(connection.timeout).toBe(20_000)
     const closes: Array<CloseDetails> = []
     connection.onclose = (event) => closes.push(event)
     await new Promise((resolve) => (connection.onopen = resolve))
@@ -113,6 +114,7 @@ test("LongPoll fails on a POST the server rejects or does not answer in time", a
 
   const slow = await open()
   slow.connection.timeout = 0
+  expect(slow.connection.timeout).toBe(0)
   slow.connection.send('[null,"1","phoenix","heartbeat",{}]')
   await waitFor(() => slow.closes.length === 1)
   expect(slow.closes[0]).toEqual({

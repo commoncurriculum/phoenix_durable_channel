@@ -5,5 +5,5 @@ defmodule PhoenixDurableChannel.Ledger do
 
   @callback put_received(socket :: Phoenix.Socket.t(), number :: pos_integer(), reply()) :: :ok
 
-  @callback reply(socket :: Phoenix.Socket.t(), number :: pos_integer()) :: reply()
+  @callback reply(socket :: Phoenix.Socket.t(), number :: pos_integer()) :: reply() | nil
 end

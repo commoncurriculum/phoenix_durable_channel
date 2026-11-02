@@ -1,8 +1,7 @@
 import { Effect, Stream as EffectStream, Fiber } from "effect"
-import type { Actor, EventFromLogic } from "xstate"
+import type { EventFromLogic } from "xstate"
 import { ignore, startMachine } from "./actors"
 import { channelReadMachine } from "./machines/channel-read"
-import { readerMachine } from "./machines/reader"
 import type { Push } from "./push"
 import {
   decodeDurableStreamsControl,
@@ -195,13 +194,12 @@ export class DurableStream implements MessageStream {
               this.resume = { number: last, offset: streamNextOffset }
               return last
             }
-            let delivered = last
+            let latest = last
             for (const message of decodeDurableStreamsData(event.data)) {
-              if (message.number <= delivered) continue
               callbacks.deliver(message)
-              delivered = message.number
+              latest = message.number
             }
-            return delivered
+            return latest
           }),
         ),
       callbacks.failed,
@@ -248,24 +246,5 @@ export class ChannelStream implements MessageStream {
       stopListening()
       actor.stop()
     }
-  }
-}
-
-export class Reader {
-  readonly actor: Actor<typeof readerMachine>
-
-  constructor(
-    stream: MessageStream,
-    from: Position,
-    deliver: (message: StreamMessage) => void,
-    backoffMs: (tries: number) => number,
-  ) {
-    this.actor = startMachine(readerMachine, { stream, from, backoffMs }, ignore, (event) =>
-      deliver(event.message),
-    )
-  }
-
-  stop(): void {
-    this.actor.send({ type: "STOP" })
   }
 }

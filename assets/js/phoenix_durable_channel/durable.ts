@@ -1,21 +1,20 @@
 import { Effect } from "effect"
-import type { Actor } from "xstate"
-import { ignore, startMachine } from "./actors"
-import type { ChannelSocket } from "./channel"
+import { fromCallback, type Actor } from "xstate"
+import { backoff, ignore, startMachine } from "./actors"
+import type { ChannelExtension, ChannelSocket, Trigger } from "./channel"
 import { CHANNEL_EVENTS } from "./constants"
 import { Log } from "./log"
-import { followMachine } from "./machines/follow"
+import { readerMachine, type ReaderEvent, type ReadingInput } from "./machines/reader"
 import type { Push } from "./push"
 import { Reply } from "./reply"
+import type { Message } from "./serializer"
 import {
   builtInReaders,
   ChannelStream,
-  Reader,
   type ChannelListener,
   type MessageStream,
   type PublishedReader,
   type ReaderFactory,
-  type StreamMessage,
 } from "./stream"
 import type { Params } from "./url"
 import {
@@ -30,7 +29,6 @@ const unread: MessageStream = { read: () => ignore }
 export interface DurableChannel {
   readonly topic: string
   readonly socket: ChannelSocket
-  isJoined(): boolean
   joinRef(): string | null
   push(event: string, payload?: unknown, timeout?: number): Push
 }
@@ -40,16 +38,16 @@ export interface DurableOptions {
   after?: number
 }
 
-export class Durable {
+export class Durable implements ChannelExtension {
   readonly log: Log
-  private readonly follow: Actor<typeof followMachine>
+  private readonly reader: Actor<typeof readerMachine>
   private readonly listeners = new Set<ChannelListener>()
   private readonly readers: Record<string, ReaderFactory>
 
   constructor(
     private readonly channel: DurableChannel,
-    private readonly options: DurableOptions,
-    private readonly deliver: (message: StreamMessage) => void,
+    options: DurableOptions,
+    private readonly trigger: Trigger,
   ) {
     const { socket } = channel
     this.readers = {
@@ -65,35 +63,46 @@ export class Durable {
       ...options.readers,
     }
     this.log = new Log(
-      {
-        channelJoined: () => channel.isJoined(),
-        backoffMs: (tries) => socket.rejoinAfterMs(tries),
-        makeRef: () => socket.makeRef(),
-      },
-      {
-        sync: () =>
-          channel
-            .push(CHANNEL_EVENTS.sync)
-            .receive("ok", (response) =>
-              this.log.actor.send({ type: "SYNCED", ...decodeSyncReply(response) }),
-            )
-            .receive("timeout", () => this.log.actor.send({ type: "SYNC_FAILED" })),
-        send: ({ event, payload, ref, number }) =>
-          socket.push({
-            topic: channel.topic,
-            event,
-            payload,
-            ref,
-            join_ref: channel.joinRef(),
-            number,
-          }),
+      (tries) => socket.rejoinAfterMs(tries),
+      (event) => {
+        switch (event.type) {
+          case "sync":
+            return channel
+              .push(CHANNEL_EVENTS.sync)
+              .receive("ok", (response) =>
+                this.log.actor.send({ type: "SYNCED", ...decodeSyncReply(response) }),
+              )
+              .receive("timeout", () => this.log.actor.send({ type: "SYNC_FAILED" }))
+          case "send":
+            return socket.push({
+              topic: channel.topic,
+              event: event.event,
+              payload: event.payload,
+              ref: event.sent.ref,
+              join_ref: channel.joinRef(),
+              number: event.sent.number,
+            })
+          case "answer":
+            return event.reply.answer(event.status, event.response)
+        }
       },
     )
-    this.follow = startMachine(
-      followMachine,
-      { read: (latest) => this.read(latest) },
+    this.reader = startMachine(
+      readerMachine.provide({
+        actors: {
+          reading: fromCallback<ReaderEvent, ReadingInput, ReaderEvent>(({ input, sendBack }) =>
+            this.streamFor(input.published).read(input.from, {
+              deliver: (message) => sendBack({ type: "MESSAGE", message }),
+              moved: (epoch) => sendBack({ type: "MOVED", epoch }),
+              failed: () => sendBack({ type: "FAILED" }),
+            }),
+          ),
+          waitToRead: backoff((tries) => socket.rejoinAfterMs(tries)),
+        },
+      }),
+      { after: options.after ?? null },
       ignore,
-      ignore,
+      ({ message }) => trigger(message.event, message.payload),
     )
   }
 
@@ -106,7 +115,7 @@ export class Durable {
   }
 
   joined(response: unknown): void {
-    this.follow.send({ type: "PUBLISHED", reader: decodeDurableJoinReply(response).phx_reader })
+    this.reader.send({ type: "PUBLISHED", reader: decodeDurableJoinReply(response).phx_reader })
     this.log.actor.send({ type: "CHANNEL_JOINED" })
   }
 
@@ -117,37 +126,40 @@ export class Durable {
 
   closed(): void {
     this.log.actor.send({ type: "CHANNEL_CLOSED" })
-    this.follow.send({ type: "STOP" })
+    this.reader.send({ type: "STOP" })
   }
 
   push(event: string, payload: unknown): Reply {
     if (payload instanceof ArrayBuffer)
       throw new Error(`tried to push a durable '${event}' with a binary payload`)
     const reply = new Reply()
-    this.log.push(event, payload, reply)
+    this.log.actor.send({ type: "PUSH", event, payload, reply })
     return reply
   }
 
-  receive(message: StreamMessage): void {
-    for (const listener of this.listeners) listener.message(message)
+  receive(message: Message): void {
+    const { event, payload, ref, join_ref, number } = message
+    if (number === undefined) return this.trigger(event, payload, ref, join_ref)
+    for (const listener of this.listeners) listener.message({ number, event, payload })
   }
 
-  private read(latest: () => PublishedReader): () => void {
-    const published = latest()
-    const reader = new Reader(
-      this.streamFor(published, latest),
-      { after: this.options.after ?? published.last, epoch: published.epoch ?? "" },
-      this.deliver,
-      (tries) => this.channel.socket.rejoinAfterMs(tries),
-    )
-    return () => reader.stop()
+  reply(ref: string | null, status: string, response: unknown): void {
+    this.log.actor.send({ type: "REPLY", ref, status, response })
   }
 
-  private streamFor(published: PublishedReader, latest: () => PublishedReader): MessageStream {
+  private streamFor(published: PublishedReader): MessageStream {
     const factory = this.readers[published.type]
-    if (factory !== undefined) return factory(latest, () => this.refresh())
+    if (factory !== undefined)
+      return factory(
+        () => this.latest(),
+        () => this.refresh(),
+      )
     this.channel.socket.log("channel", `no reader for the store "${published.type}"`, published)
     return unread
+  }
+
+  private latest(): PublishedReader {
+    return this.reader.getSnapshot().context.published!
   }
 
   private refresh(): Promise<void> {
@@ -156,7 +168,7 @@ export class Durable {
         this.channel
           .push(CHANNEL_EVENTS.reader)
           .receive("ok", (response) => {
-            this.follow.send({ type: "PUBLISHED", reader: decodePublishedReader(response) })
+            this.reader.send({ type: "PUBLISHED", reader: decodePublishedReader(response) })
             resume(Effect.void)
           })
           .receive("timeout", () => resume(Effect.fail("timeout")))

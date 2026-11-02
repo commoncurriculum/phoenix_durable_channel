@@ -5,8 +5,7 @@ defmodule TestServer.Application do
     children = [
       {Phoenix.PubSub, name: TestServer.PubSub},
       TestServer.Joins,
-      TestServer.Ledger,
-      PhoenixDurableChannel.Stream.Memory,
+      {PhoenixDurableChannel.Stream.Memory, kept: 2000},
       PhoenixDurableChannel.Stream.DurableStreams,
       {S2,
        name: TestServer.S2,
@@ -36,6 +35,8 @@ defmodule TestServer.Joins do
       )
 
   def count(topic), do: Agent.get(__MODULE__, &Map.get(&1, topic, 0))
+
+  def first_time?(key), do: increment(key) == 1
 end
 
 defmodule TestServer.Presence do
@@ -208,112 +209,26 @@ defmodule TestServer.PresenceChannel do
   end
 end
 
-defmodule TestServer.Ledger do
-  @behaviour PhoenixDurableChannel.Ledger
+defmodule TestServer.SlowMemory do
   @behaviour PhoenixDurableChannel.Stream
   @behaviour PhoenixDurableChannel.Stream.ThroughChannel
-  use Agent
-
-  @empty %{
-    sent: [],
-    received: 0,
-    replies: %{},
-    forgotten: 0,
-    used: MapSet.new(),
-    epoch: "first",
-    handled: 0,
-    previous: nil
-  }
-
-  def start_link(_), do: Agent.start_link(fn -> %{} end, name: __MODULE__)
-
-  def update(topic, function) do
-    Agent.get_and_update(__MODULE__, fn state ->
-      {reply, ledger} = function.(Map.get(state, topic, @empty))
-      {reply, Map.put(state, topic, ledger)}
-    end)
-  end
-
-  def get(topic), do: Agent.get(__MODULE__, &Map.get(&1, topic, @empty))
+  alias PhoenixDurableChannel.Stream.Memory
 
   @impl true
-  def delivery, do: :channel
+  def append(socket, event, payload), do: Memory.append(socket, event, payload)
 
   @impl true
-  def append(socket, event, payload) do
-    update(socket.topic, fn ledger ->
-      number = length(ledger.sent) + 1
-      {number, %{ledger | sent: ledger.sent ++ [{number, event, payload}]}}
-    end)
-  end
+  def reader(socket), do: Memory.reader(socket)
 
   @impl true
   def since(socket, number, limit) do
-    if String.starts_with?(socket.topic, "durable:slow_read") and
-         first_time?(socket.topic, :slow_read),
-       do: Process.sleep(300)
-
-    ledger = get(socket.topic)
-    latest = length(ledger.sent)
-    sent = min(latest, number + limit)
-
-    messages =
-      Enum.filter(ledger.sent, fn {kept, _, _} ->
-        kept > number and kept <= sent and kept > ledger.forgotten
-      end)
-
-    %{messages: messages, sent: sent, latest: latest, epoch: ledger.epoch}
-  end
-
-  @impl true
-  def received(socket), do: get(socket.topic).received
-
-  @impl true
-  def put_received(socket, number, reply) do
-    update(socket.topic, fn ledger ->
-      {:ok,
-       %{
-         ledger
-         | received: max(ledger.received, number),
-           replies: Map.put(ledger.replies, number, reply)
-       }}
-    end)
-  end
-
-  @impl true
-  def reply(socket, number), do: Map.get(get(socket.topic).replies, number)
-
-  @impl true
-  def reader(socket) do
-    ledger = get(socket.topic)
-    %{type: "phoenix", last: length(ledger.sent), epoch: ledger.epoch}
-  end
-
-  def forget(topic),
-    do: update(topic, fn ledger -> {:ok, %{ledger | forgotten: length(ledger.sent)}} end)
-
-  def reset(topic) do
-    epoch = Integer.to_string(System.unique_integer([:positive]))
-    update(topic, fn ledger -> {:ok, %{@empty | epoch: epoch, previous: ledger}} end)
-  end
-
-  def restore(topic), do: update(topic, fn ledger -> {:ok, ledger.previous} end)
-
-  def handled(topic),
-    do: update(topic, fn ledger -> {:ok, %{ledger | handled: ledger.handled + 1}} end)
-
-  def first_time?(topic, key) do
-    update(topic, fn ledger ->
-      {not MapSet.member?(ledger.used, key), %{ledger | used: MapSet.put(ledger.used, key)}}
-    end)
+    if TestServer.Joins.first_time?("slow_read:" <> socket.topic), do: Process.sleep(300)
+    Memory.since(socket, number, limit)
   end
 end
 
 defmodule TestServer.Elsewhere do
   @behaviour PhoenixDurableChannel.Stream
-
-  @impl true
-  def delivery, do: :reader
 
   @impl true
   def append(socket, event, payload),
@@ -333,9 +248,6 @@ defmodule TestServer.ExpiringDurableStreams do
   alias PhoenixDurableChannel.Stream.DurableStreams
 
   @impl true
-  def delivery, do: :reader
-
-  @impl true
   def append(socket, event, payload), do: DurableStreams.append(socket, event, payload)
 
   @impl true
@@ -343,10 +255,10 @@ defmodule TestServer.ExpiringDurableStreams do
     reader = DurableStreams.reader(socket)
 
     cond do
-      TestServer.Ledger.first_time?(socket.topic, :join) ->
+      TestServer.Joins.first_time?("join:" <> socket.topic) ->
         %{reader | token: DurableStreams.token("read", socket.topic, -60)}
 
-      TestServer.Ledger.first_time?(socket.topic, :slow_reader) ->
+      TestServer.Joins.first_time?("slow_reader:" <> socket.topic) ->
         Process.sleep(900)
         reader
 
@@ -388,29 +300,39 @@ end
 
 defmodule TestServer.DurableChannel do
   use Phoenix.Channel
-  use PhoenixDurableChannel.Channel, ledger: TestServer.Ledger, stream: TestServer.Ledger
-  alias TestServer.Ledger
+
+  use PhoenixDurableChannel.Channel,
+    ledger: PhoenixDurableChannel.Stream.Memory,
+    stream: PhoenixDurableChannel.Stream.Memory
+
+  alias PhoenixDurableChannel.Stream.Memory
+  alias PhoenixDurableChannel.Stream.Mongo
 
   @stores %{
-    "memory" => PhoenixDurableChannel.Stream.Memory,
-    "mongo" => PhoenixDurableChannel.Stream.Mongo,
+    "memory" => Memory,
+    "mongo" => Mongo,
     "s2" => PhoenixDurableChannel.Stream.S2,
     "durable-streams" => PhoenixDurableChannel.Stream.DurableStreams
   }
 
   @streams Map.merge(@stores, %{
              "durable-streams-expiring" => TestServer.ExpiringDurableStreams,
-             "elsewhere" => TestServer.Elsewhere
+             "elsewhere" => TestServer.Elsewhere,
+             "slow" => TestServer.SlowMemory
            })
 
-  def durable_stream(socket), do: Map.get(@streams, socket.assigns[:stream], Ledger)
+  def durable_stream(socket), do: Map.get(@streams, socket.assigns[:stream], Memory)
 
-  def durable_ledger(socket), do: Map.get(@stores, socket.assigns[:ledger], Ledger)
+  def durable_ledger(socket), do: Map.get(@stores, socket.assigns[:ledger], Memory)
 
   @impl true
   def join(_topic, params, socket) do
     if params["greet"], do: send(self(), :greet)
     if params["busy_after_join"], do: send(self(), :busy)
+
+    if params["forget_replies"],
+      do: :ets.insert(Memory, {socket.topic, %{Memory.kept(socket.topic) | replies: %{}}})
+
     {:ok, assign(socket, stream: params["stream"], ledger: params["ledger"])}
   end
 
@@ -432,21 +354,27 @@ defmodule TestServer.DurableChannel do
   end
 
   def handle_in("publish_silently", %{"body" => body}, socket) do
-    {:reply, {:ok, %{number: Ledger.append(socket, "update", %{body: body})}}, socket}
+    number = durable_stream(socket).append(socket, "update", %{body: body})
+    {:reply, {:ok, %{number: number}}, socket}
   end
 
   def handle_in("forget", _payload, socket) do
-    Ledger.forget(socket.topic)
+    :ets.insert(Memory, {socket.topic, %{Memory.kept(socket.topic) | messages: []}})
     {:reply, :ok, socket}
   end
 
   def handle_in("reset", _payload, socket) do
-    Ledger.reset(socket.topic)
+    :ets.insert(Memory, {{:before_reset, socket.topic}, Memory.kept(socket.topic)})
+    :ets.delete(Memory, socket.topic)
     {:reply, :ok, socket}
   end
 
   def handle_in("restore", _payload, socket) do
-    Ledger.restore(socket.topic)
+    :ets.insert(
+      Memory,
+      {socket.topic, :ets.lookup_element(Memory, {:before_reset, socket.topic}, 2)}
+    )
+
     {:reply, :ok, socket}
   end
 
@@ -459,13 +387,13 @@ defmodule TestServer.DurableChannel do
     do: {:reply, {:ok, %{durable: Map.get(socket.assigns, :phx_durable, false)}}, socket}
 
   def handle_in("ledger", _payload, socket) do
-    ledger = Ledger.get(socket.topic)
-    {:reply, {:ok, %{received: ledger.received, sent: length(ledger.sent)}}, socket}
+    received = durable_ledger(socket).received(socket)
+    sent = durable_stream(socket).reader(socket).last
+    {:reply, {:ok, %{received: received, sent: sent}}, socket}
   end
 
-  def handle_in("handled", _payload, socket) do
-    {:reply, {:ok, %{handled: Ledger.get(socket.topic).handled}}, socket}
-  end
+  def handle_in("handled", _payload, socket),
+    do: {:reply, {:ok, %{handled: TestServer.Joins.count("handled:" <> socket.topic)}}, socket}
 
   def handle_in("kill_transport", _payload, socket) do
     Process.exit(socket.transport_pid, :kill)
@@ -481,6 +409,9 @@ defmodule TestServer.DurableChannel do
     do: {:stop, :normal, {:ok, %{stopped: true}}, socket}
 
   def handle_in("action", %{"body" => "stop_quietly"}, socket), do: {:stop, :normal, socket}
+  def handle_in("action", %{"body" => "stop_ok"}, socket), do: {:stop, :normal, :ok, socket}
+  def handle_in("action", %{"body" => "hibernate"}, socket), do: {:noreply, socket, :hibernate}
+  def handle_in("action", %{"body" => "ok"}, socket), do: {:reply, :ok, socket}
   def handle_in("action", %{"body" => "crash"}, _socket), do: raise("crash requested by the test")
 
   def handle_in("action", %{"body" => "lose_reply"}, socket) do
@@ -489,7 +420,7 @@ defmodule TestServer.DurableChannel do
   end
 
   def handle_in("action", %{"body" => "busy_once"} = action, socket) do
-    if Ledger.first_time?(socket.topic, :busy_once),
+    if TestServer.Joins.first_time?("busy_once:" <> socket.topic),
       do: {:retry, "busy", socket},
       else: {:reply, {:ok, action}, socket}
   end
@@ -501,12 +432,15 @@ defmodule TestServer.DurableChannel do
 
   def handle_in("action", %{"body" => "slow"} = action, socket) do
     Process.sleep(500)
-    Ledger.handled(socket.topic)
+    TestServer.Joins.increment("handled:" <> socket.topic)
     {:reply, {:ok, action}, socket}
   end
 
   def handle_in("publish_many_silently", %{"count" => count}, socket) do
-    Enum.each(1..count, fn number -> Ledger.append(socket, "update", %{body: number}) end)
+    Enum.each(1..count, fn number ->
+      durable_stream(socket).append(socket, "update", %{body: number})
+    end)
+
     {:reply, :ok, socket}
   end
 

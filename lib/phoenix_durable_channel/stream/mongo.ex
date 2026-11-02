@@ -5,9 +5,6 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
 
   @epoch "mongo"
 
-  @impl PhoenixDurableChannel.Stream
-  def delivery, do: :channel
-
   def create_indexes do
     Enum.each([config()[:messages], config()[:replies]], fn collection ->
       :ok =
@@ -83,10 +80,16 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
 
   @impl PhoenixDurableChannel.Ledger
   def reply(socket, number) do
-    document =
-      Mongo.find_one(config()[:name], config()[:replies], %{topic: socket.topic, number: number})
+    case Mongo.find_one(config()[:name], config()[:replies], %{
+           topic: socket.topic,
+           number: number
+         }) do
+      %{"status" => status, "response" => response} ->
+        {String.to_existing_atom(status), response}
 
-    {String.to_existing_atom(document["status"]), document["response"]}
+      nil ->
+        nil
+    end
   end
 
   def config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)

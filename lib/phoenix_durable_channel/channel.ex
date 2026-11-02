@@ -3,6 +3,7 @@ defmodule PhoenixDurableChannel.Channel do
 
   @replace_timeout 5_000
   @page 500
+  @replies_kept 32
 
   defmacro __using__(options) do
     quote do
@@ -34,12 +35,18 @@ defmodule PhoenixDurableChannel.Channel do
           def handle_info(:phx_replaced, socket),
             do: PhoenixDurableChannel.Channel.replaced(socket)
 
+          def handle_info({:phx_durable_joined, ledger_for}, socket),
+            do: PhoenixDurableChannel.Channel.joined(ledger_for, socket)
+
           def handle_info(message, socket), do: super(message, socket)
         end
       else
         quote do
           def handle_info(:phx_replaced, socket),
             do: PhoenixDurableChannel.Channel.replaced(socket)
+
+          def handle_info({:phx_durable_joined, ledger_for}, socket),
+            do: PhoenixDurableChannel.Channel.joined(ledger_for, socket)
 
           def handle_info(message, socket),
             do: PhoenixDurableChannel.Channel.unexpected_message(message, socket)
@@ -100,26 +107,39 @@ defmodule PhoenixDurableChannel.Channel do
 
   def join({:ok, reply, socket}, %{"phx_durable" => true}, ledger_for, stream_for)
       when is_map(reply) do
-    replace(socket.topic)
-
-    socket =
-      Phoenix.Socket.assign(socket,
-        phx_durable: true,
-        phx_received: ledger_for.(socket).received(socket)
-      )
-
+    send(self(), {:phx_durable_joined, ledger_for})
+    socket = Phoenix.Socket.assign(socket, phx_durable: true, phx_replies: %{})
     {:ok, Map.put(reply, :phx_reader, stream_for.(socket).reader(socket)), socket}
   end
 
   def join(result, _params, _ledger_for, _stream_for), do: result
 
-  def replace(topic) do
-    name = {__MODULE__, topic}
+  def joined(ledger_for, socket) do
+    name = {__MODULE__, socket.topic}
 
     :global.trans({name, self()}, fn ->
-      stop(:global.whereis_name(name))
+      replaced = :global.whereis_name(name)
+
+      if replaced != :undefined do
+        monitor = Process.monitor(replaced)
+        send(replaced, :phx_replaced)
+
+        receive do
+          {:DOWN, ^monitor, :process, _process, _reason} -> :ok
+        after
+          @replace_timeout ->
+            Process.exit(replaced, :kill)
+
+            receive do
+              {:DOWN, ^monitor, :process, _process, _reason} -> :ok
+            end
+        end
+      end
+
       :yes = :global.re_register_name(name, self())
     end)
+
+    {:noreply, Phoenix.Socket.assign(socket, :phx_received, ledger_for.(socket).received(socket))}
   end
 
   def unexpected_message(message, socket) do
@@ -139,28 +159,10 @@ defmodule PhoenixDurableChannel.Channel do
     {:stop, {:shutdown, :replaced}, socket}
   end
 
-  def stop(:undefined), do: :ok
-
-  def stop(process) do
-    monitor = Process.monitor(process)
-    send(process, :phx_replaced)
-
-    receive do
-      {:DOWN, ^monitor, :process, _process, _reason} -> :ok
-    after
-      @replace_timeout ->
-        Process.exit(process, :kill)
-
-        receive do
-          {:DOWN, ^monitor, :process, _process, _reason} -> :ok
-        end
-    end
-  end
-
   def push_durable(stream, socket, event, payload) do
     number = stream.append(socket, event, payload)
 
-    if stream.delivery() == :channel,
+    if function_exported?(stream, :since, 3),
       do: Phoenix.Channel.push(socket, event, {:durable, number, payload})
 
     :ok
@@ -185,44 +187,62 @@ defmodule PhoenixDurableChannel.Channel do
 
     cond do
       number <= received ->
-        {:reply, ledger.reply(socket, number), socket}
+        kept =
+          Map.get_lazy(socket.assigns.phx_replies, number, fn ->
+            ledger.reply(socket, number) || {:error, %{reason: "reply_lost"}}
+          end)
+
+        {:reply, kept, socket}
 
       number > received + 1 ->
         {:reply, {:error, %{phx_not_taken: "out_of_order"}}, socket}
 
       true ->
-        case run(handle_in, Phoenix.Socket.assign(socket, :phx_number, number)) do
+        result =
+          try do
+            handle_in.(Phoenix.Socket.assign(socket, :phx_number, number))
+          catch
+            kind, reason ->
+              Logger.error(Exception.format(kind, reason, __STACKTRACE__))
+              {:reply, {:error, %{reason: "crashed"}}, socket}
+          end
+
+        case result do
           {:retry, reason, socket} ->
             {:reply, {:error, %{phx_not_taken: reason}}, socket}
 
           {:noreply, socket} ->
-            {:reply, {:ok, %{}}, record(ledger, number, {:ok, %{}}, socket)}
+            record(ledger, number, {:ok, %{}}, socket, &{:reply, &1, &2})
+
+          {:noreply, socket, _timeout_or_hibernate} ->
+            record(ledger, number, {:ok, %{}}, socket, &{:reply, &1, &2})
+
+          {:reply, status, socket} when is_atom(status) ->
+            record(ledger, number, {status, %{}}, socket, &{:reply, &1, &2})
 
           {:reply, reply, socket} ->
-            {:reply, answer(reply), record(ledger, number, answer(reply), socket)}
+            record(ledger, number, reply, socket, &{:reply, &1, &2})
 
           {:stop, reason, socket} ->
-            {:stop, reason, {:ok, %{}}, record(ledger, number, {:ok, %{}}, socket)}
+            record(ledger, number, {:ok, %{}}, socket, &{:stop, reason, &1, &2})
+
+          {:stop, reason, status, socket} when is_atom(status) ->
+            record(ledger, number, {status, %{}}, socket, &{:stop, reason, &1, &2})
 
           {:stop, reason, reply, socket} ->
-            {:stop, reason, answer(reply), record(ledger, number, answer(reply), socket)}
+            record(ledger, number, reply, socket, &{:stop, reason, &1, &2})
         end
     end
   end
 
-  def answer(status) when is_atom(status), do: {status, %{}}
-  def answer(reply), do: reply
-
-  def record(ledger, number, reply, socket) do
+  def record(ledger, number, reply, socket, answer) do
     :ok = ledger.put_received(socket, number, reply)
-    Phoenix.Socket.assign(socket, :phx_received, number)
-  end
 
-  def run(handle_in, socket) do
-    handle_in.(socket)
-  catch
-    kind, reason ->
-      Logger.error(Exception.format(kind, reason, __STACKTRACE__))
-      {:reply, {:error, %{reason: "crashed"}}, socket}
+    replies =
+      socket.assigns.phx_replies
+      |> Map.put(number, reply)
+      |> Map.delete(number - @replies_kept)
+
+    answer.(reply, Phoenix.Socket.assign(socket, phx_received: number, phx_replies: replies))
   end
 end

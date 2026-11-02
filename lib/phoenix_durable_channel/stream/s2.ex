@@ -3,16 +3,12 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   @behaviour PhoenixDurableChannel.Stream
 
   @impl PhoenixDurableChannel.Stream
-  def delivery, do: :reader
-
-  @impl PhoenixDurableChannel.Stream
   def append(socket, event, payload) do
     record = %S2.V1.AppendRecord{body: Jason.encode!(%{event: event, payload: payload})}
 
-    {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} =
-      S2.append(config()[:name], socket.topic, [record])
-
-    number
+    case S2.append(config()[:name], socket.topic, [record]) do
+      {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} -> number
+    end
   end
 
   @impl PhoenixDurableChannel.Stream
@@ -28,8 +24,9 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   end
 
   def last(stream) do
-    {:ok, %S2.V1.StreamPosition{seq_num: last}} = S2.check_tail(config()[:name], stream)
-    last
+    case S2.check_tail(config()[:name], stream) do
+      {:ok, %S2.V1.StreamPosition{seq_num: last}} -> last
+    end
   end
 
   def read_token(stream) do
@@ -39,22 +36,19 @@ defmodule PhoenixDurableChannel.Stream.S2 do
           S2.Config.new(base_url: config()[:account_endpoint], token: config()[:token])
         )
 
-      {:ok, %S2.IssueAccessTokenResponse{access_token: token}} =
-        S2.AccessTokens.issue_access_token(
-          %S2.AccessTokenInfo{
-            id:
-              "#{stream}/#{System.unique_integer([:positive])}-#{System.system_time(:millisecond)}",
-            expires_at: DateTime.add(DateTime.utc_now(), 1, :day),
-            scope: %S2.AccessTokenScope{
-              basins: %{exact: config()[:basin]},
-              streams: %{exact: stream},
-              ops: ["read"]
-            }
-          },
-          server: client
-        )
+      info = %S2.AccessTokenInfo{
+        id: "#{stream}/#{System.unique_integer([:positive])}-#{System.system_time(:millisecond)}",
+        expires_at: DateTime.add(DateTime.utc_now(), 1, :day),
+        scope: %S2.AccessTokenScope{
+          basins: %{exact: config()[:basin]},
+          streams: %{exact: stream},
+          ops: ["read"]
+        }
+      }
 
-      token
+      case S2.AccessTokens.issue_access_token(info, server: client) do
+        {:ok, %S2.IssueAccessTokenResponse{access_token: token}} -> token
+      end
     end
   end
 
@@ -72,24 +66,32 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   def put_received(socket, number, {status, response}) do
     body = Jason.encode!(%{number: number, status: status, response: response})
 
-    {:ok, _ack} =
-      S2.append(config()[:name], replies(socket.topic), [%S2.V1.AppendRecord{body: body}])
-
-    :ok
+    case S2.append(config()[:name], replies(socket.topic), [%S2.V1.AppendRecord{body: body}]) do
+      {:ok, _ack} -> :ok
+    end
   end
 
   @impl PhoenixDurableChannel.Ledger
   def reply(socket, number), do: reply(socket, number, number - 1)
 
   def reply(socket, number, from) do
-    {:ok, %S2.V1.ReadBatch{records: records}} =
-      S2.read(config()[:name], replies(socket.topic), seq_num: from, count: 64)
+    case S2.read(config()[:name], replies(socket.topic), seq_num: from, count: 64) do
+      {:ok, %S2.V1.ReadBatch{records: []}} ->
+        nil
 
-    replies = Enum.map(records, fn record -> Jason.decode!(record.body) end)
+      {:ok, %S2.V1.ReadBatch{records: records}} ->
+        replies = Enum.map(records, fn record -> Jason.decode!(record.body) end)
 
-    case Enum.find(replies, fn reply -> reply["number"] == number end) do
-      %{"status" => status, "response" => response} -> {String.to_existing_atom(status), response}
-      nil -> reply(socket, number, from + length(records))
+        case Enum.find(replies, fn reply -> reply["number"] == number end) do
+          %{"status" => status, "response" => response} ->
+            {String.to_existing_atom(status), response}
+
+          nil ->
+            reply(socket, number, from + length(records))
+        end
+
+      {:error, %S2.Error{status: 416}} ->
+        nil
     end
   end
 

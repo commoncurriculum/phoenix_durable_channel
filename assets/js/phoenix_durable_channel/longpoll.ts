@@ -6,7 +6,6 @@ import { longPollMachine, type LongPollEmitted } from "./machines/longpoll"
 const DEFAULT_LONGPOLL_TIMEOUT = 20_000
 
 export class LongPoll implements TransportConnection {
-  timeout = DEFAULT_LONGPOLL_TIMEOUT
   binaryType: BinaryType = "arraybuffer"
   onopen: TransportConnection["onopen"] = ignore
   onerror: TransportConnection["onerror"] = ignore
@@ -20,18 +19,24 @@ export class LongPoll implements TransportConnection {
     this.actor = startMachine(
       longPollMachine,
       {
-        settings: {
-          authToken,
-          endpoint: endPoint
-            .replace("ws://", "http://")
-            .replace("wss://", "https://")
-            .replace(new RegExp(`(.*)/${TRANSPORTS.websocket}`), `$1/${TRANSPORTS.longpoll}`),
-          timeout: () => this.timeout,
-        },
+        authToken,
+        endpoint: endPoint
+          .replace("ws://", "http://")
+          .replace("wss://", "https://")
+          .replace(new RegExp(`(.*)/${TRANSPORTS.websocket}`), `$1/${TRANSPORTS.longpoll}`),
+        timeout: DEFAULT_LONGPOLL_TIMEOUT,
       },
       ignore,
       (event) => this.handle(event),
     )
+  }
+
+  get timeout(): number {
+    return this.actor.getSnapshot().context.timeout
+  }
+
+  set timeout(timeout: number) {
+    this.actor.send({ type: "TIMEOUT", timeout })
   }
 
   get readyState(): number {

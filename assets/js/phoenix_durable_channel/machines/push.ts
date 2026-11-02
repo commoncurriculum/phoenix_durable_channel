@@ -1,5 +1,5 @@
 import { assign, emit, setup } from "xstate"
-import { sleep } from "../actors"
+import { sleep, type Data } from "../actors"
 
 export type ReplyStatus = "ok" | "error" | "timeout"
 export type PushState = "buffered" | "sent" | ReplyStatus
@@ -14,7 +14,7 @@ export type PushEmitted = { type: "finished"; status: ReplyStatus; response: unk
 
 export const pushMachine = setup({
   types: {
-    context: {} as { timeout: number; ref: string | null; response: unknown },
+    context: {} as Data<{ timeout: number; ref: string | null; response: unknown }>,
     input: {} as { timeout: number },
     events: {} as PushEvent,
     emitted: {} as PushEmitted,

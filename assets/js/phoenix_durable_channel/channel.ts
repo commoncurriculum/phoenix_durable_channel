@@ -1,6 +1,6 @@
 import { createReactive } from "@supergrain/kernel"
 import type { Actor } from "xstate"
-import { startMachine, tagged } from "./actors"
+import { backoff, startMachine, tagged } from "./actors"
 import { CHANNEL_EVENTS, decodeChannelState, type ChannelState } from "./constants"
 import { Durable, type DurableOptions } from "./durable"
 import type { Log } from "./log"
@@ -25,6 +25,41 @@ export interface ChannelOptions extends DurableOptions {
   durable?: boolean
 }
 
+export type Trigger = (
+  event: string,
+  payload: unknown,
+  ref?: string | null,
+  joinRef?: string | null,
+) => void
+
+export interface ChannelExtension {
+  readonly log: Log | null
+  joinParams(params: Params): Params
+  refuses(response: unknown): boolean
+  joined(response: unknown): void
+  lost(): void
+  closed(): void
+  push(event: string, payload: unknown): Reply
+  receive(message: Message): void
+  reply(ref: string | null, status: string, response: unknown): void
+}
+
+const plain = (topic: string, trigger: Trigger): ChannelExtension => ({
+  log: null,
+  joinParams: (params) => params,
+  refuses: () => false,
+  joined: () => {},
+  lost: () => {},
+  closed: () => {},
+  push: (event) => {
+    throw new Error(
+      `tried to push a durable '${event}' to '${topic}', which was not opened with { durable: true }`,
+    )
+  },
+  receive: ({ event, payload, ref, join_ref }) => trigger(event, payload, ref, join_ref),
+  reply: () => {},
+})
+
 type Binding = {
   event: string
   ref: number
@@ -35,8 +70,7 @@ export class Channel {
   readonly status: { state: ChannelState }
   readonly actor: Actor<typeof channelMachine>
   readonly joinPush = new Reply()
-  private readonly durable: Durable | null
-  timeout: number
+  private readonly extension: ChannelExtension
   private readonly params: () => Params
   private readonly bindings: Array<Binding> = []
   private bindingRef = 0
@@ -50,21 +84,15 @@ export class Channel {
     options: ChannelOptions = {},
   ) {
     this.params = typeof params === "function" ? params : () => params
-    this.timeout = socket.timeout
-    this.durable = options.durable
-      ? new Durable(this, options, (message) => this.trigger(message.event, message.payload))
-      : null
+    const trigger: Trigger = (event, payload, ref, joinRef) =>
+      this.trigger(event, payload, ref, joinRef)
+    this.extension = options.durable ? new Durable(this, options, trigger) : plain(topic, trigger)
     this.status = createReactive<{ state: ChannelState }>({ state: "closed" })
     this.actor = startMachine(
-      channelMachine,
-      {
-        settings: {
-          timeout: () => this.timeout,
-          socketIsOpen: () => socket.isConnected(),
-          makeRef: () => socket.makeRef(),
-          rejoinAfterMs: (tries) => socket.rejoinAfterMs(tries),
-        },
-      },
+      channelMachine.provide({
+        actors: { waitToRejoin: backoff((tries) => socket.rejoinAfterMs(tries)) },
+      }),
+      { timeout: socket.timeout, socketOpen: socket.isConnected() },
       (snapshot) => {
         this.status.state = tagged(snapshot, decodeChannelState)
       },
@@ -73,11 +101,15 @@ export class Channel {
   }
 
   get log(): Log | null {
-    return this.durable?.log ?? null
+    return this.extension.log
   }
 
   get state(): ChannelState {
     return this.status.state
+  }
+
+  get timeout(): number {
+    return this.actor.getSnapshot().context.timeout
   }
 
   joinRef(): string | null {
@@ -113,8 +145,7 @@ export class Channel {
         "tried to join multiple times. 'join' can only be called a single time per channel instance",
       )
     }
-    this.timeout = timeout
-    this.actor.send({ type: "JOIN" })
+    this.actor.send({ type: "JOIN", timeout })
     return this.joinPush
   }
 
@@ -125,9 +156,8 @@ export class Channel {
       leavePush.answer("ok", {})
       return leavePush
     }
-    this.timeout = timeout
     this.leavePush = leavePush
-    this.actor.send({ type: "LEAVE" })
+    this.actor.send({ type: "LEAVE", timeout })
     return leavePush
   }
 
@@ -143,13 +173,7 @@ export class Channel {
         `tried to push '${event}' to '${this.topic}' before joining. Use channel.join() before pushing events`,
       )
     }
-    if (typeof timeoutOrOptions === "object") {
-      if (!this.durable)
-        throw new Error(
-          `tried to push a durable '${event}' to '${this.topic}', which was not opened with { durable: true }`,
-        )
-      return this.durable.push(event, payload)
-    }
+    if (typeof timeoutOrOptions === "object") return this.extension.push(event, payload)
     const push = new Push(event, payload, timeoutOrOptions, (finished) =>
       this.pushes.delete(finished),
     )
@@ -203,20 +227,15 @@ export class Channel {
   }
 
   receiveMessage(message: Message): void {
-    const { event, payload, ref, join_ref, number } = message
-    switch (event) {
+    switch (message.event) {
       case CHANNEL_EVENTS.reply:
-        this.receiveReply(ref, payload)
-        break
+        return this.receiveReply(message.ref, message.payload)
       case CHANNEL_EVENTS.error:
-        this.actor.send({ type: "SERVER_ERROR", reason: payload })
-        break
+        return this.actor.send({ type: "SERVER_ERROR", reason: message.payload })
       case CHANNEL_EVENTS.close:
-        this.actor.send({ type: "SERVER_CLOSE", reason: payload })
-        break
+        return this.actor.send({ type: "SERVER_CLOSE", reason: message.payload })
       default:
-        if (this.durable && number !== undefined) this.durable.receive({ number, event, payload })
-        else this.trigger(event, payload, ref, join_ref)
+        return this.extension.receive(message)
     }
   }
 
@@ -234,19 +253,14 @@ export class Channel {
 
   private receiveReply(ref: string | null, payload: unknown): void {
     const { status, response } = decodeReply(payload)
-    const snapshot = this.actor.getSnapshot()
-    if (
-      ref === snapshot.context.joinRef &&
-      snapshot.matches({ member: { joining: "awaitingReply" } })
-    ) {
-      if (status === "ok" && this.durable?.refuses(response))
-        return this.actor.send({ type: "JOIN_REFUSED", response: { reason: "nondurable" } })
-      return this.actor.send({ type: "JOIN_REPLY", status, response })
-    }
-    if (ref === snapshot.context.leaveRef) return this.actor.send({ type: "LEAVE_REPLY" })
+    const { joinRef, leaveRef } = this.actor.getSnapshot().context
+    if (ref === joinRef && status === "ok" && this.extension.refuses(response))
+      return this.actor.send({ type: "JOIN_REFUSED", ref, response: { reason: "nondurable" } })
+    if (ref === joinRef) return this.actor.send({ type: "JOIN_REPLY", ref, status, response })
+    if (ref === leaveRef) return this.actor.send({ type: "LEAVE_REPLY", ref })
     for (const push of this.pushes)
       if (push.ref === ref) push.actor.send({ type: "REPLY", status, response })
-    this.log?.actor.send({ type: "REPLY", ref, status, response })
+    this.extension.reply(ref, status, response)
   }
 
   private trigger(
@@ -274,31 +288,37 @@ export class Channel {
 
   private handle(event: ChannelEmitted): void {
     switch (event.type) {
-      case "join":
+      case "join": {
+        const ref = this.socket.makeRef()
+        this.actor.send({ type: "JOIN_SENT", ref })
         return this.socket.push({
           topic: this.topic,
           event: CHANNEL_EVENTS.join,
-          payload: this.durable ? this.durable.joinParams(this.params()) : this.params(),
-          ref: event.joinRef,
-          join_ref: event.joinRef,
+          payload: this.extension.joinParams(this.params()),
+          ref,
+          join_ref: ref,
         })
-      case "leave":
+      }
+      case "leave": {
+        const ref = this.socket.makeRef()
+        this.actor.send({ type: "LEAVE_SENT", ref })
         return this.socket.push({
           topic: this.topic,
           event: CHANNEL_EVENTS.leave,
           payload: {},
-          ref: event.leaveRef,
+          ref,
           join_ref: event.joinRef,
         })
+      }
       case "answerJoin":
         return this.joinPush.answer(event.status, event.response)
       case "answerLeave":
         return this.leavePush.answer(event.status, {})
       case "joined":
         for (const push of this.pushes) this.send(push)
-        return this.durable?.joined(event.response)
+        return this.extension.joined(event.response)
       case "lost":
-        this.durable?.lost()
+        this.extension.lost()
         for (const push of this.pushes)
           if (push.status.state === "sent") push.actor.send({ type: "CONNECTION_LOST" })
         return
@@ -306,7 +326,7 @@ export class Channel {
         return this.trigger(CHANNEL_EVENTS.error, event.reason)
       case "closed":
         for (const push of this.pushes) push.actor.send({ type: "CHANNEL_CLOSED" })
-        this.durable?.closed()
+        this.extension.closed()
         this.socket.remove(this)
         return this.trigger(CHANNEL_EVENTS.close, event.reason)
     }

@@ -1,8 +1,9 @@
 import { assign, enqueueActions, fromCallback, setup } from "xstate"
-import { sleep } from "../actors"
-import type { MessageStream, Position, StreamMessage } from "../stream"
+import { backoff, ignore, type Data } from "../actors"
+import type { Position, PublishedReader, StreamMessage } from "../stream"
 
-type ReaderEvent =
+export type ReaderEvent =
+  | { type: "PUBLISHED"; reader: PublishedReader }
   | { type: "MESSAGE"; message: StreamMessage }
   | { type: "MOVED"; epoch: string }
   | { type: "FAILED" }
@@ -10,47 +11,65 @@ type ReaderEvent =
 
 export type ReaderEmitted = { type: "deliver"; message: StreamMessage }
 
-const reading = fromCallback<ReaderEvent, { stream: MessageStream; from: Position }, ReaderEvent>(
-  ({ input, sendBack }) =>
-    input.stream.read(input.from, {
-      deliver: (message) => sendBack({ type: "MESSAGE", message }),
-      moved: (epoch) => sendBack({ type: "MOVED", epoch }),
-      failed: () => sendBack({ type: "FAILED" }),
-    }),
-)
+export type ReadingInput = { published: PublishedReader; from: Position }
 
-export interface ReaderContext {
-  stream: MessageStream
-  backoffMs(tries: number): number
+type ReaderContext = Data<{
+  after: number | null
+  published: PublishedReader | null
   from: Position
   left: ReadonlyMap<string, number>
   tries: number
-}
+}>
 
 export const readerMachine = setup({
   types: {
     context: {} as ReaderContext,
-    input: {} as Omit<ReaderContext, "tries" | "left">,
+    input: {} as { after: number | null },
     events: {} as ReaderEvent,
     emitted: {} as ReaderEmitted,
   },
-  actors: { reading, sleep },
+  actors: {
+    reading: fromCallback<ReaderEvent, ReadingInput, ReaderEvent>(ignore),
+    waitToRead: backoff(Number),
+  },
+  guards: {
+    isNext: ({ context, event }) =>
+      event.type === "MESSAGE" && event.message.number > context.from.after,
+  },
 }).createMachine({
   id: "reader",
-  context: ({ input }) => ({ ...input, left: new Map(), tries: 0 }),
-  initial: "reading",
-  on: { STOP: ".stopped" },
+  context: ({ input }) => ({
+    after: input.after,
+    published: null,
+    from: { after: 0, epoch: "" },
+    left: new Map(),
+    tries: 0,
+  }),
+  initial: "waiting",
+  on: {
+    PUBLISHED: { actions: assign({ published: ({ event }) => event.reader }) },
+    STOP: ".stopped",
+  },
   states: {
+    waiting: {
+      on: {
+        PUBLISHED: {
+          target: "reading",
+          actions: assign(({ context, event }) => ({
+            published: event.reader,
+            from: { after: context.after ?? event.reader.last, epoch: event.reader.epoch ?? "" },
+          })),
+        },
+      },
+    },
     reading: {
       invoke: {
         src: "reading",
-        input: ({ context }) => ({
-          stream: context.stream,
-          from: context.from,
-        }),
+        input: ({ context }) => ({ published: context.published!, from: context.from }),
       },
       on: {
         MESSAGE: {
+          guard: "isNext",
           actions: enqueueActions(({ context, event, enqueue }) => {
             enqueue.emit({ type: "deliver", message: event.message })
             enqueue.assign({
@@ -74,8 +93,8 @@ export const readerMachine = setup({
     backingOff: {
       entry: assign({ tries: ({ context }) => context.tries + 1 }),
       invoke: {
-        src: "sleep",
-        input: ({ context }) => ({ ms: context.backoffMs(context.tries) }),
+        src: "waitToRead",
+        input: ({ context }) => ({ tries: context.tries }),
         onDone: "reading",
       },
     },

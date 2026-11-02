@@ -1,4 +1,5 @@
 import { assign, emit, enqueueActions, setup } from "xstate"
+import type { Data } from "../actors"
 import type { Position, StreamMessage } from "../stream"
 
 type ChannelReadEvent =
@@ -11,11 +12,11 @@ export type ChannelReadEmitted =
   | { type: "moved"; epoch: string }
   | { type: "failed" }
 
-interface ChannelReadContext {
+type ChannelReadContext = Data<{
   from: Position
   held: ReadonlyMap<number, StreamMessage>
   next: number
-}
+}>
 
 export const channelReadMachine = setup({
   types: {

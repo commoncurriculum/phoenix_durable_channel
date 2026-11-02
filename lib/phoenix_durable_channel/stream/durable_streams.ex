@@ -4,17 +4,31 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   use GenServer
 
   @table __MODULE__
-  @recent 32
-
-  @impl PhoenixDurableChannel.Stream
-  def delivery, do: :reader
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
   @impl GenServer
   def init(_options) do
     :ets.new(@table, [:named_table, :public, write_concurrency: true])
-    {:ok, nil}
+    {:ok, %{channels: %{}}}
+  end
+
+  @impl GenServer
+  def handle_call({:watch, topic, channel}, _from, state) do
+    if not Map.has_key?(state.channels, channel), do: Process.monitor(channel)
+    {:reply, :ok, put_in(state, [:channels, channel], topic)}
+  end
+
+  @impl GenServer
+  def handle_info({:DOWN, _ref, :process, channel, _reason}, state) do
+    {topic, channels} = Map.pop(state.channels, channel)
+
+    if topic not in Map.values(channels) do
+      :ets.delete(@table, topic)
+      :ets.delete(@table, replies(topic))
+    end
+
+    {:noreply, %{state | channels: channels}}
   end
 
   @impl PhoenixDurableChannel.Stream
@@ -70,30 +84,36 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
       ]
     )
 
-    %{given: 0, offset: "-1", last: 0, recent: %{}}
+    %{given: 0, offset: "-1", last: 0}
   end
 
   def read_to_end(topic, kept) do
-    response =
-      Req.get!(url(topic),
-        params: [offset: kept.offset],
-        headers: [authorization: "Bearer " <> token("read", topic)],
-        decode_body: false
-      )
+    response = get(topic, kept.offset)
 
-    read = response.body |> Jason.decode!() |> Enum.reduce(kept, &keep/2)
-    [next_offset] = Req.Response.get_header(response, "stream-next-offset")
-    read = %{read | offset: next_offset, given: read.last}
+    last =
+      response.body
+      |> Jason.decode!()
+      |> Enum.reduce(kept.last, fn message, last -> max(last, message["number"]) end)
+
+    read = %{
+      kept
+      | offset: hd(Req.Response.get_header(response, "stream-next-offset")),
+        last: last,
+        given: last
+    }
 
     if Req.Response.get_header(response, "stream-up-to-date") == ["true"],
       do: read,
       else: read_to_end(topic, read)
   end
 
-  def keep(%{"number" => number, "payload" => payload}, kept) do
-    recent = kept.recent |> Map.put(number, payload) |> Map.delete(number - @recent)
-    %{kept | last: max(kept.last, number), recent: recent}
-  end
+  def get(topic, offset),
+    do:
+      Req.get!(url(topic),
+        params: [offset: offset],
+        headers: [authorization: "Bearer " <> token("read", topic)],
+        decode_body: false
+      )
 
   def replies(topic), do: topic <> "/replies"
 
@@ -103,48 +123,34 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   @impl PhoenixDurableChannel.Ledger
   def put_received(socket, number, {status, response}) do
     topic = replies(socket.topic)
-    kept = kept(topic) || read(topic)
     post(topic, number, "reply", %{status: status, response: response})
-    payload = %{"status" => Atom.to_string(status), "response" => response}
-    :ets.insert(@table, {topic, keep(%{"number" => number, "payload" => payload}, kept)})
+    kept = kept(topic) || read(topic)
+    :ets.insert(@table, {topic, %{kept | last: max(kept.last, number)}})
     :ok
   end
 
   @impl PhoenixDurableChannel.Ledger
-  def reply(socket, number) do
-    topic = replies(socket.topic)
-
-    case Map.fetch((kept(topic) || read(topic)).recent, number) do
-      {:ok, %{"status" => status, "response" => response}} ->
-        {String.to_existing_atom(status), response}
-
-      :error ->
-        find(topic, "-1", number)
-    end
-  end
+  def reply(socket, number), do: find(replies(socket.topic), "-1", number)
 
   def find(topic, offset, number) do
-    response =
-      Req.get!(url(topic),
-        params: [offset: offset],
-        headers: [authorization: "Bearer " <> token("read", topic)],
-        decode_body: false
-      )
-
+    response = get(topic, offset)
     found = response.body |> Jason.decode!() |> Enum.find(&(&1["number"] == number))
-    [next_offset] = Req.Response.get_header(response, "stream-next-offset")
 
-    case found do
-      %{"payload" => %{"status" => status, "response" => response}} ->
-        {String.to_existing_atom(status), response}
+    cond do
+      found != nil ->
+        {String.to_existing_atom(found["payload"]["status"]), found["payload"]["response"]}
 
-      nil ->
-        find(topic, next_offset, number)
+      Req.Response.get_header(response, "stream-up-to-date") == ["true"] ->
+        nil
+
+      true ->
+        find(topic, hd(Req.Response.get_header(response, "stream-next-offset")), number)
     end
   end
 
   @impl PhoenixDurableChannel.Stream
   def reader(socket) do
+    :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})
     config = config()
     path = "/v1/stream/#{config[:project]}/#{URI.encode_www_form(socket.topic)}"
     kept = read(socket.topic)
