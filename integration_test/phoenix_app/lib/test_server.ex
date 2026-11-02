@@ -388,6 +388,7 @@ defmodule TestServer.DurableChannel do
   def join(_topic, params, socket) do
     if params["greet"], do: send(self(), :greet)
     if params["busy_after_join"], do: send(self(), :busy)
+    if params["not_durable"], do: send(self(), :not_durable)
 
     if params["forget_replies"],
       do: :ets.insert(Memory, {socket.topic, %{Memory.kept(socket.topic) | replies: %{}}})
@@ -400,6 +401,8 @@ defmodule TestServer.DurableChannel do
     Process.sleep(300)
     {:noreply, socket}
   end
+
+  def handle_info(:not_durable, socket), do: {:noreply, assign(socket, phx_durable: false)}
 
   def handle_info(:greet, socket) do
     push_durable(socket, "update", %{body: "welcome"})

@@ -427,6 +427,23 @@ test("a read token that expired is fetched again, and asked for again when the a
   expect(seen).toEqual(["one"])
 })
 
+test("a fresh reader the server will not give is logged, and the read fails and is tried again", async () => {
+  const logs: Array<string> = []
+  const socket = openSocket("/socket", { ...fast, logger: (_kind, message) => logs.push(message) })
+  socket.connect()
+  const name = durableTopic("expiring")
+  const channel = socket.channel(
+    name,
+    { stream: "durable-streams-expiring", not_durable: true },
+    { durable: true, after: 0 },
+  )
+  await join(channel)
+  await waitFor(
+    () => logs.filter((line) => line === `${name} could not get a fresh reader`).length >= 2,
+  )
+  expect(channel.state).toBe("joined")
+})
+
 test("with the server's memory as the store, a channel gets what was published while it was away", async () => {
   const topic = durableTopic("memory")
   const socket = openSocket("/socket", fast)

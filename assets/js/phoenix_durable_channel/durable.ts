@@ -173,22 +173,34 @@ export class Durable implements ChannelExtension {
 
   private streamFor(published: PublishedReader): MessageStream {
     const factory = this.readers[published.type]
-    if (factory !== undefined) return factory(published, () => this.refresh())
+    if (factory !== undefined) return factory(published, (signal) => this.refresh(signal))
     this.channel.socket.log("channel", `no reader for the store "${published.type}"`, published)
     return unread
   }
 
-  private refresh(): Promise<void> {
+  private refresh(signal?: AbortSignal): Promise<void> {
     return Effect.runPromise(
-      Effect.async<void, unknown>((resume) => {
+      Effect.async<unknown, unknown>((resume) => {
         this.channel
           .push(CHANNEL_EVENTS.reader)
-          .receive("ok", (response) => {
-            this.reader.send({ type: "PUBLISHED", reader: decodePublishedReader(response) })
-            resume(Effect.void)
-          })
+          .receive("ok", (response) => resume(Effect.succeed(response)))
+          .receive("error", (response) => resume(Effect.fail(response)))
           .receive("timeout", () => resume(Effect.fail("timeout")))
-      }),
+      }).pipe(
+        Effect.tapError((reason) =>
+          Effect.sync(() =>
+            this.channel.socket.log(
+              "channel",
+              `${this.channel.topic} could not get a fresh reader`,
+              reason,
+            ),
+          ),
+        ),
+        Effect.map((response) =>
+          this.reader.send({ type: "PUBLISHED", reader: decodePublishedReader(response) }),
+        ),
+      ),
+      { signal },
     )
   }
 }

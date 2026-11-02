@@ -45,7 +45,7 @@ export interface PublishedReader {
 
 export type ReaderFactory = (
   published: PublishedReader,
-  refresh: () => Promise<void>,
+  refresh: (signal?: AbortSignal) => Promise<void>,
 ) => MessageStream
 
 export const builtInReaders: Record<string, ReaderFactory> = {
@@ -64,13 +64,13 @@ export interface S2StreamOptions {
   basin: string
   stream: string
   token?: string | null
-  refused?: () => Promise<void>
+  refused?: (signal?: AbortSignal) => Promise<void>
 }
 
 export interface DurableStreamOptions {
   url: string
   token?: string | null
-  refused?: () => Promise<void>
+  refused?: (signal?: AbortSignal) => Promise<void>
   resume?: Resume
 }
 
@@ -80,7 +80,7 @@ function readEvents(
   url: string,
   headers: Record<string, string>,
   token: string | null,
-  refused: (() => Promise<void>) | undefined,
+  refused: ((signal?: AbortSignal) => Promise<void>) | undefined,
   handle: (
     events: EffectStream.Stream<{ event: string; data: string }, unknown>,
   ) => Effect.Effect<void, unknown>,
