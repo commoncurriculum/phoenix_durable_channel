@@ -16,8 +16,8 @@ defmodule PhoenixDurableChannel.NoCommentsTest do
           {quoted, []} ->
             quoted
             |> Macro.prewalk(false, fn
-              {:@, _, [{attribute, _, [text]}]} = node, _found
-              when attribute in [:doc, :moduledoc, :typedoc] and is_binary(text) ->
+              {:@, _, [{attribute, _, [value]}]} = node, _found
+              when attribute in [:doc, :moduledoc, :typedoc] and value not in [false, nil] ->
                 {node, true}
 
               node, found ->

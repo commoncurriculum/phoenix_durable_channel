@@ -16,8 +16,8 @@ defmodule PhoenixDurableChannel.Serializer do
   def encode!(message), do: JSONSerializer.encode!(message)
 
   @impl true
-  def decode!(raw, opts) do
-    case opts[:opcode] == :text and Phoenix.json_library().decode!(raw) do
+  def decode!(raw, options) do
+    case options[:opcode] == :text and Phoenix.json_library().decode!(raw) do
       [join_ref, ref, topic, event, payload, number] ->
         %Message{
           join_ref: join_ref,
@@ -31,7 +31,7 @@ defmodule PhoenixDurableChannel.Serializer do
         %Message{join_ref: join_ref, ref: ref, topic: topic, event: event, payload: payload}
 
       false ->
-        JSONSerializer.decode!(raw, opts)
+        JSONSerializer.decode!(raw, options)
     end
   end
 end
