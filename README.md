@@ -290,7 +290,7 @@ A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3
 **Read from the store's own protocol** (`S2`, `DurableStreams`):
 
 - Each topic is one stream of the same name, and each token reads only that stream. A store that refuses the token (401 or 403) makes the client ask the channel for a fresh reader (`phx_reader`) and read again.
-- S2 record `seq_num` n is message n + 1. A command record, such as the trim S2 appends when a stream is deleted, takes a number but is no message: the client passes it. `received/1` reads back from the tail 16 records at a time to the last message with a count.
+- S2 record `seq_num` n is message n + 1. A command record, such as the trim S2 appends when a stream is deleted, takes a number but is no message: the client passes it. `received/1` reads back from the tail to the last message with a count, 16 records at first and twice as many each time after, up to 1000, reading on where S2 cuts a read short by size.
 - Durable Streams offsets are opaque, so each message carries its number, `phx_reader` gives the offset where `last` ends, a read that fails starts again at the offset where it last got to, and the server numbers on from the stream's last with `Stream-Seq`, which the store refuses to repeat, so two nodes never write the same number.
 - A stream that is deleted and made again, or trimmed past where a client got to, is not noticed, and a deleted one counts the client's pushes from 0 again, so pushes it already ran run again: delete a topic's stream only when no client will read it again.
 

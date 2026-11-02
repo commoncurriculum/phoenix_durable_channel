@@ -441,6 +441,11 @@ defmodule TestServer.DurableChannel do
     {:reply, :ok, socket}
   end
 
+  def handle_in("publish_large", _payload, socket) do
+    push_durable(socket, "large", %{body: String.duplicate("x", 600_000)})
+    {:reply, :ok, socket}
+  end
+
   def handle_in("trim_nothing", _payload, socket) do
     trim = %S2.V1.AppendRecord{
       headers: [%S2.V1.Header{name: "", value: "trim"}],

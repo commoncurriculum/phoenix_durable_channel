@@ -850,6 +850,27 @@ test("an S2 command record at the stream's tail leaves the count where the last 
   expect(await ledger(again)).toEqual({ received: 1, sent: 2 })
 })
 
+test("the count is read from the newest message that has one, past S2 reads cut short by size", async () => {
+  const name = durableTopic("large")
+  const params = { stream: "s2" }
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(name, params, { durable: true })
+  await join(channel)
+  await answer(channel.push("action", { body: "first" }, { durable: true }))
+  await answer(channel.push("publish_large"))
+  await answer(channel.push("publish_large"))
+  expect(await answer(channel.push("action", { body: "second" }, { durable: true }))).toEqual({
+    status: "ok",
+    response: { body: "second" },
+  })
+  await answer(channel.leave())
+
+  const again = socket.channel(name, params, { durable: true })
+  await join(again)
+  expect(await ledger(again)).toEqual({ received: 2, sent: 4 })
+})
+
 test("push_durable refuses phx_reply, the event of a reply, and the channel rejoins", async () => {
   const socket = openSocket("/socket", fast)
   socket.connect()

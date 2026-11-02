@@ -1,7 +1,8 @@
 defmodule PhoenixDurableChannel.Stream.S2 do
   @behaviour PhoenixDurableChannel.Stream
 
-  @read_back 16
+  @first_page 16
+  @largest_page 1000
 
   @impl PhoenixDurableChannel.Stream
   def append(socket, event, payload, received) do
@@ -65,28 +66,37 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   end
 
   @impl PhoenixDurableChannel.Stream
-  def received(socket), do: received(socket.topic, last(socket.topic))
+  def received(socket), do: received(socket.topic, last(socket.topic), @first_page)
 
-  def received(_stream, 0), do: 0
+  def received(_stream, 0, _page), do: 0
 
-  def received(stream, before) do
-    start = max(before - @read_back, 0)
+  def received(stream, before, page) do
+    start = max(before - page, 0)
 
-    case S2.read(config()[:name], stream, seq_num: start, count: before - start, clamp: true) do
+    counts =
+      stream
+      |> records(start, before)
+      |> Enum.flat_map(fn record ->
+        case Jason.decode(record.body) do
+          {:ok, %{"received" => received}} when is_integer(received) -> [received]
+          _no_count -> []
+        end
+      end)
+
+    if counts == [],
+      do: received(stream, start, min(page * 2, @largest_page)),
+      else: List.last(counts)
+  end
+
+  def records(stream, from, before) do
+    case S2.read(config()[:name], stream, seq_num: from, count: before - from, clamp: true) do
+      {:ok, %S2.V1.ReadBatch{records: []}} ->
+        []
+
       {:ok, %S2.V1.ReadBatch{records: records}} ->
-        counts =
-          Enum.flat_map(records, fn record ->
-            case Jason.decode(record.body) do
-              {:ok, %{"received" => received}}
-              when is_integer(received) and record.seq_num < before ->
-                [received]
-
-              _no_count ->
-                []
-            end
-          end)
-
-        if counts == [], do: received(stream, start), else: List.last(counts)
+        next = List.last(records).seq_num + 1
+        read = Enum.filter(records, fn record -> record.seq_num < before end)
+        if next < before, do: read ++ records(stream, next, before), else: read
 
       {:error, error} ->
         raise "S2 refused a read of #{stream}: #{inspect(error)}"
