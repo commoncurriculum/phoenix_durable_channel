@@ -8,7 +8,12 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
     do:
       :ok =
         Mongo.create_indexes(config()[:name], config()[:messages], [
-          [key: [topic: 1, number: 1], name: "topic_number", unique: true]
+          [key: [topic: 1, number: 1], name: "topic_number", unique: true],
+          [
+            key: [topic: 1, number: 1],
+            name: "topic_number_counted",
+            partialFilterExpression: %{received: %{"$type" => "number"}}
+          ]
         ])
 
   def find_newest(topic),
@@ -77,7 +82,7 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
       (Mongo.find_one(
          config()[:name],
          config()[:messages],
-         %{topic: socket.topic, received: %{"$ne" => nil}},
+         %{topic: socket.topic, received: %{"$type" => "number"}},
          sort: [number: -1],
          projection: %{received: 1}
        ) || %{})["received"] || 0

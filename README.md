@@ -271,12 +271,12 @@ Both directions are one list: the topic's stream.
 
 One behaviour, `PhoenixDurableChannel.Stream`: `append/4` numbers and keeps a message with the count of the client's pushes handled; `received/1` reads that count from the last message that has one; `reader/1` is how the client reads them, pushed after the join as `phx_reader`, so the client needs no configuration of its own.
 
-| Store            | Where                                                                    | `phx_reader`                                          |
-| ---------------- | ------------------------------------------------------------------------ | ----------------------------------------------------- |
-| `Mongo`          | documents in one collection, unique on `{topic, number}`                 | `{type: "phoenix", last, epoch}`                      |
-| `S2`             | an S2 stream per topic                                                   | `{type: "s2", endpoint, basin, stream, token, last}`  |
-| `DurableStreams` | a Durable Streams stream per topic                                       | `{type: "durable-streams", url, token, last, offset}` |
-| `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart | `{type: "phoenix", last, epoch}`                      |
+| Store            | Where                                                                                               | `phx_reader`                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `Mongo`          | documents in one collection, unique on `{topic, number}`, and indexed on it where they have a count | `{type: "phoenix", last, epoch}`                      |
+| `S2`             | an S2 stream per topic                                                                              | `{type: "s2", endpoint, basin, stream, token, last}`  |
+| `DurableStreams` | a Durable Streams stream per topic                                                                  | `{type: "durable-streams", url, token, last, offset}` |
+| `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart                            | `{type: "phoenix", last, epoch}`                      |
 
 A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3` and `epoch/1`) is read through the channel. Any other is read from the store's own protocol.
 
