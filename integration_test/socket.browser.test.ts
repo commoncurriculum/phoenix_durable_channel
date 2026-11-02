@@ -215,6 +215,55 @@ test("a channel joined for a new connection from a socket callback is not errore
   }
 })
 
+test("a socket closed from its open callback leaves its channels waiting, and they join once when it opens again", async () => {
+  const socket = openSocket("/socket", { reconnectAfterMs: () => 10 })
+  const name = topic("closed-on-open")
+  const replies: Array<string> = []
+  socket.onMessage((message) => {
+    if (message.topic === name && message.event === "phx_reply") replies.push(message.event)
+  })
+  const closing = socket.onOpen(() => socket.disconnect())
+  const channel = socket.channel(name)
+  const joined = answer(channel.join())
+  socket.connect()
+  await waitFor(() => socket.establishedConnections === 1)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  expect(socket.connectionState()).toBe("closed")
+  expect(socket.establishedConnections).toBe(1)
+  expect(channel.state).not.toBe("joined")
+
+  socket.off([closing])
+  socket.connect()
+  expect((await joined).status).toBe("ok")
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(replies).toEqual(["phx_reply"])
+  expect(channel.state).toBe("joined")
+})
+
+test("a channel left while its join waits in the send buffer leaves that join on the server too", async () => {
+  const socket = openSocket("/socket", { reconnectAfterMs: () => 10 })
+  const name = topic("left-in-buffer")
+  const events: Array<string> = []
+  socket.onMessage((message) => {
+    if (message.topic === name) events.push(message.event)
+  })
+  const closing = socket.onOpen(() => socket.disconnect())
+  const channel = socket.channel(name)
+  channel.join()
+  socket.connect()
+  await waitFor(() => socket.establishedConnections === 1)
+  await waitFor(() => socket.connectionState() === "closed")
+  const unsent = channel.push("echo", {}, 10_000)
+  expect((await answer(channel.leave())).status).toBe("ok")
+  expect(channel.state).toBe("closed")
+  expect((await answer(unsent)).status).toBe("timeout")
+
+  socket.off([closing])
+  socket.connect()
+  await waitFor(() => events.includes("phx_close"))
+  expect(events).toEqual(["phx_reply", "phx_reply", "phx_close"])
+})
+
 test("builds its URL from the endpoint, params and vsn", () => {
   const relative = new Socket("/socket", {
     params: { token: "t", user: { id: 1 } },

@@ -51,7 +51,8 @@ export class LongPoll implements TransportConnection {
   }
 
   close(code = 1000, reason = "", wasClean = true): void {
-    this.actor.send({ type: "CLOSE", code, reason, wasClean })
+    if (this.actor.getSnapshot().status === "active")
+      this.actor.send({ type: "CLOSE", code, reason, wasClean })
   }
 
   private handle(event: LongPollEmitted): void {

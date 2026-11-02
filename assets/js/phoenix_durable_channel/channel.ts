@@ -13,6 +13,7 @@ import { decodeReply } from "./wire"
 
 export interface ChannelSocket {
   timeout: number
+  readonly establishedConnections: number
   isConnected(): boolean
   makeRef(): string
   push(message: Message): void
@@ -92,7 +93,10 @@ export class Channel {
       channelMachine.provide({
         actors: { waitToRejoin: backoff((tries) => socket.rejoinAfterMs(tries)) },
       }),
-      { timeout: socket.timeout, socketOpen: socket.isConnected() },
+      {
+        timeout: socket.timeout,
+        connection: socket.isConnected() ? socket.establishedConnections : null,
+      },
       (snapshot) => {
         this.status.state = tagged(snapshot, decodeChannelState)
       },
@@ -239,12 +243,16 @@ export class Channel {
     }
   }
 
-  socketOpened(): void {
-    this.actor.send({ type: "SOCKET_OPEN" })
+  socketOpened(connection: number): void {
+    this.actor.send({ type: "SOCKET_OPEN", connection })
   }
 
-  socketClosed(): void {
-    this.actor.send({ type: "SOCKET_CLOSED" })
+  socketClosed(connection: number): void {
+    this.actor.send({ type: "SOCKET_CLOSED", connection })
+  }
+
+  joinEncoded(ref: string | null, connection: number): void {
+    this.actor.send({ type: "JOIN_ENCODED", ref, connection })
   }
 
   replace(): void {

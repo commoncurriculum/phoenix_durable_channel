@@ -39,10 +39,10 @@ export type SocketEvent =
   | { type: "REPLACE_TRANSPORT"; transport: TransportKind }
 
 export type SocketEmitted =
-  | { type: "encode"; message: Message }
+  | { type: "encode"; message: Message; connection: number }
   | { type: "buffered"; message: Message }
-  | { type: "opened" }
-  | { type: "connectionLost" }
+  | { type: "opened"; connection: number }
+  | { type: "connectionLost"; connection: number }
   | ({ type: "closed" } & CloseDetails)
   | { type: "errored"; error: unknown }
   | { type: "message"; data: EncodedMessage }
@@ -106,7 +106,6 @@ export const socketMachine = setup({
   },
   actions: {
     fallBack: assign({ transport: "longpoll", fellBack: true }),
-    loseConnection: emit({ type: "connectionLost" }),
     close: enqueueActions(({ enqueue }, details: CloseDetails) => {
       enqueue.emit({ type: "closed", ...details })
       enqueue.assign({ closeWasClean: details.wasClean })
@@ -186,7 +185,6 @@ export const socketMachine = setup({
                     target: "live",
                     reenter: true,
                     actions: [
-                      "loseConnection",
                       {
                         type: "close",
                         params: ({ event }) => closeDetails(event),
@@ -196,18 +194,15 @@ export const socketMachine = setup({
                   },
                   {
                     target: "waitingToReconnect",
-                    actions: [
-                      "loseConnection",
-                      {
-                        type: "close",
-                        params: ({ event }) => closeDetails(event),
-                      },
-                    ],
+                    actions: {
+                      type: "close",
+                      params: ({ event }) => closeDetails(event),
+                    },
                   },
                 ],
                 SUSPEND: {
                   target: "suspended",
-                  actions: ["loseConnection", { type: "close", params: suspended }],
+                  actions: { type: "close", params: suspended },
                 },
                 DISCONNECT: {
                   target: "#socket.connection.disconnected",
@@ -255,13 +250,26 @@ export const socketMachine = setup({
                     }),
                     enqueueActions(({ context, enqueue }) => {
                       for (const message of context.buffer)
-                        enqueue.emit({ type: "encode", message })
+                        enqueue.emit({
+                          type: "encode",
+                          message,
+                          connection: context.establishedConnections,
+                        })
                     }),
                     "dropBuffer",
-                    emit({ type: "opened" }),
+                    emit(({ context }) => ({
+                      type: "opened" as const,
+                      connection: context.establishedConnections,
+                    })),
                     raise({ type: "CONNECTION_OPENED" }),
                   ],
-                  exit: raise({ type: "CONNECTION_LOST" }),
+                  exit: [
+                    emit(({ context }) => ({
+                      type: "connectionLost" as const,
+                      connection: context.establishedConnections,
+                    })),
+                    raise({ type: "CONNECTION_LOST" }),
+                  ],
                   invoke: {
                     src: "sleep",
                     input: ({ context }) => ({
@@ -270,20 +278,18 @@ export const socketMachine = setup({
                     onDone: {
                       target: "#socket.connection.engaged.live",
                       reenter: true,
-                      actions: [
-                        "loseConnection",
-                        assign({
-                          transport: "websocket",
-                          fellBack: false,
-                        }),
-                      ],
+                      actions: assign({
+                        transport: "websocket",
+                        fellBack: false,
+                      }),
                     },
                   },
                   on: {
                     PUSH: {
-                      actions: emit(({ event }) => ({
+                      actions: emit(({ context, event }) => ({
                         type: "encode" as const,
                         message: event.message,
+                        connection: context.establishedConnections,
                       })),
                     },
                     ENCODED: {
@@ -336,6 +342,7 @@ export const socketMachine = setup({
                             ref: context.heartbeatRef,
                             join_ref: null,
                           },
+                          connection: context.establishedConnections,
                         })),
                       ],
                       invoke: {
@@ -345,7 +352,7 @@ export const socketMachine = setup({
                         }),
                         onDone: {
                           target: "#socket.connection.engaged.waitingToReconnect",
-                          actions: ["loseConnection", { type: "close", params: heartbeatTimedOut }],
+                          actions: { type: "close", params: heartbeatTimedOut },
                         },
                       },
                       on: { HEARTBEAT_REPLY: { guard: "answersHeartbeat", target: "beating" } },

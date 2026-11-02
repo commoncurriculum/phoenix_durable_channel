@@ -12,6 +12,7 @@ import {
 import { Channel, type ChannelOptions } from "./channel"
 import {
   AUTH_TOKEN_PREFIX,
+  CHANNEL_EVENTS,
   DEFAULT_TIMEOUT,
   DEFAULT_VSN,
   TRANSPORTS,
@@ -196,13 +197,11 @@ export class Socket {
 
   disconnect(callback?: () => void, code = 1000, reason = ""): void {
     if (callback) this.disconnectCallbacks.push(callback)
-    this.loseConnection()
     this.actor.send({ type: "DISCONNECT", code, reason })
   }
 
   replaceTransport(transport: TransportConstructor): void {
     this.webSocket = transport
-    this.loseConnection()
     this.actor.send({
       type: "REPLACE_TRANSPORT",
       transport: transport === LongPoll ? "longpoll" : "websocket",
@@ -309,10 +308,6 @@ export class Socket {
     this.logger?.(kind, message, data)
   }
 
-  private loseConnection(): void {
-    if (this.isConnected()) for (const channel of this.channels) channel.socketClosed()
-  }
-
   private addCallback(callback: StateChangeCallback): string {
     const ref = this.makeRef()
     this.stateChangeCallbacks.push({ ...callback, ref })
@@ -321,17 +316,22 @@ export class Socket {
 
   private handle(event: SocketEmitted): void {
     switch (event.type) {
-      case "encode":
-        return this.encode(event.message, (data) => this.actor.send({ type: "ENCODED", data }))
+      case "encode": {
+        const { message, connection } = event
+        if (message.event === CHANNEL_EVENTS.join)
+          for (const channel of this.channels)
+            if (channel.topic === message.topic) channel.joinEncoded(message.ref, connection)
+        return this.encode(message, (data) => this.actor.send({ type: "ENCODED", data }))
+      }
       case "buffered":
         return this.log("push", "buffered until the socket opens", event.message)
       case "opened":
         this.log("transport", `connected to ${this.endPointURL()}`)
         for (const entry of this.stateChangeCallbacks) if (entry.kind === "open") entry.callback()
-        for (const channel of this.channels) channel.socketOpened()
+        for (const channel of this.channels) channel.socketOpened(event.connection)
         return
       case "connectionLost":
-        for (const channel of this.channels) channel.socketClosed()
+        for (const channel of this.channels) channel.socketClosed(event.connection)
         return
       case "closed": {
         const details = { code: event.code, reason: event.reason, wasClean: event.wasClean }

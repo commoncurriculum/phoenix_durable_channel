@@ -5,10 +5,11 @@ import type { ChannelState } from "../constants"
 type ChannelEvent =
   | { type: "JOIN"; timeout: number }
   | { type: "JOIN_SENT"; ref: string }
+  | { type: "JOIN_ENCODED"; ref: string | null; connection: number }
   | { type: "LEAVE"; timeout: number }
   | { type: "LEAVE_SENT"; ref: string }
-  | { type: "SOCKET_OPEN" }
-  | { type: "SOCKET_CLOSED" }
+  | { type: "SOCKET_OPEN"; connection: number }
+  | { type: "SOCKET_CLOSED"; connection: number }
   | { type: "JOIN_REPLY"; ref: string | null; status: string; response: unknown }
   | { type: "JOIN_REFUSED"; ref: string | null; response: unknown }
   | { type: "LEAVE_REPLY"; ref: string | null }
@@ -28,7 +29,8 @@ export type ChannelEmitted =
 
 type ChannelContext = Data<{
   timeout: number
-  socketOpen: boolean
+  connection: number | null
+  joinConnection: number | null
   joinRef: string | null
   leaveRef: string | null
   rejoinTries: number
@@ -38,14 +40,20 @@ type ChannelContext = Data<{
 export const channelMachine = setup({
   types: {
     context: {} as ChannelContext,
-    input: {} as { timeout: number; socketOpen: boolean },
+    input: {} as { timeout: number; connection: number | null },
     events: {} as ChannelEvent,
     emitted: {} as ChannelEmitted,
     tags: {} as ChannelState,
   },
   actors: { sleep, waitToRejoin: backoff(Number) },
   guards: {
-    socketIsOpen: ({ context }) => context.socketOpen,
+    socketIsOpen: ({ context }) => context.connection !== null,
+    closesSocket: ({ context, event }) =>
+      event.type === "SOCKET_CLOSED" && event.connection === context.connection,
+    losesJoin: ({ context, event }) =>
+      event.type === "SOCKET_CLOSED" && event.connection === context.joinConnection,
+    carriesJoin: ({ context, event }) =>
+      event.type === "JOIN_ENCODED" && event.ref === context.joinRef,
     answersJoin: ({ context, event }) =>
       (event.type === "JOIN_REPLY" || event.type === "JOIN_REFUSED") &&
       event.ref === context.joinRef,
@@ -55,8 +63,8 @@ export const channelMachine = setup({
       event.type === "LEAVE_REPLY" && event.ref === context.leaveRef,
   },
   actions: {
-    socketOpened: assign({ socketOpen: true }),
-    socketClosed: assign({ socketOpen: false }),
+    socketOpened: assign((_, connection: number) => ({ connection })),
+    socketClosed: assign({ connection: null }),
     lose: emit({ type: "lost" }),
     error: emit(({ event }) => ({
       type: "errored" as const,
@@ -73,7 +81,8 @@ export const channelMachine = setup({
   id: "channel",
   context: ({ input }) => ({
     timeout: input.timeout,
-    socketOpen: input.socketOpen,
+    connection: input.connection,
+    joinConnection: null,
     joinRef: null,
     leaveRef: null,
     rejoinTries: 0,
@@ -82,9 +91,13 @@ export const channelMachine = setup({
   initial: "unjoined",
   on: {
     REPLACED: { target: ".closed" },
-    SOCKET_OPEN: { actions: "socketOpened" },
-    SOCKET_CLOSED: { actions: "socketClosed" },
-    JOIN_SENT: { actions: assign({ joinRef: ({ event }) => event.ref }) },
+    SOCKET_OPEN: { actions: { type: "socketOpened", params: ({ event }) => event.connection } },
+    SOCKET_CLOSED: { guard: "closesSocket", actions: "socketClosed" },
+    JOIN_SENT: { actions: assign({ joinRef: ({ event }) => event.ref, joinConnection: null }) },
+    JOIN_ENCODED: {
+      guard: "carriesJoin",
+      actions: assign({ joinConnection: ({ event }) => event.connection }),
+    },
     LEAVE_SENT: { actions: assign({ leaveRef: ({ event }) => event.ref }) },
   },
   states: {
@@ -117,7 +130,16 @@ export const channelMachine = setup({
               ],
             },
             awaitingSocket: {
-              on: { SOCKET_OPEN: { target: "awaitingReply", actions: "socketOpened" } },
+              on: {
+                LEAVE: {
+                  target: "#channel.closed",
+                  actions: { type: "answerLeave", params: "ok" },
+                },
+                SOCKET_OPEN: {
+                  target: "awaitingReply",
+                  actions: { type: "socketOpened", params: ({ event }) => event.connection },
+                },
+              },
             },
             awaitingReply: {
               entry: emit({ type: "join" }),
@@ -160,6 +182,7 @@ export const channelMachine = setup({
                   },
                 ],
                 SOCKET_CLOSED: {
+                  guard: "losesJoin",
                   target: "#channel.member.errored",
                   actions: ["socketClosed", "error"],
                 },
@@ -182,7 +205,11 @@ export const channelMachine = setup({
               target: "leaving",
               actions: assign({ timeout: ({ event }) => event.timeout }),
             },
-            SOCKET_CLOSED: { target: "errored", actions: ["socketClosed", "error"] },
+            SOCKET_CLOSED: {
+              guard: "losesJoin",
+              target: "errored",
+              actions: ["socketClosed", "error"],
+            },
             SERVER_ERROR: { target: "errored", actions: "error" },
             SERVER_CLOSE: "#channel.closed",
           },
@@ -195,7 +222,10 @@ export const channelMachine = setup({
             LEAVE: { target: "#channel.closed", actions: { type: "answerLeave", params: "ok" } },
             SOCKET_OPEN: {
               target: "joining",
-              actions: ["socketOpened", assign({ rejoinTries: 0 })],
+              actions: [
+                { type: "socketOpened", params: ({ event }) => event.connection },
+                assign({ rejoinTries: 0 }),
+              ],
             },
           },
           states: {
@@ -217,7 +247,13 @@ export const channelMachine = setup({
                   }),
                 },
               },
-              on: { SOCKET_CLOSED: { target: "awaitingSocket", actions: "socketClosed" } },
+              on: {
+                SOCKET_CLOSED: {
+                  guard: "closesSocket",
+                  target: "awaitingSocket",
+                  actions: "socketClosed",
+                },
+              },
             },
           },
         },
@@ -229,11 +265,14 @@ export const channelMachine = setup({
             checkingSocket: {
               always: [
                 { guard: "socketIsOpen", target: "awaitingReply" },
-                { target: "#channel.closed", actions: { type: "answerLeave", params: "ok" } },
+                {
+                  target: "#channel.closed",
+                  actions: ["leaveJoin", { type: "answerLeave", params: "ok" }],
+                },
               ],
             },
             awaitingReply: {
-              entry: emit(({ context }) => ({ type: "leave" as const, joinRef: context.joinRef })),
+              entry: "leaveJoin",
               invoke: {
                 src: "sleep",
                 input: ({ context }) => ({ ms: context.timeout }),
@@ -249,6 +288,7 @@ export const channelMachine = setup({
                   actions: { type: "answerLeave", params: "ok" },
                 },
                 SOCKET_CLOSED: {
+                  guard: "closesSocket",
                   target: "#channel.closed",
                   actions: ["socketClosed", { type: "answerLeave", params: "ok" }],
                 },

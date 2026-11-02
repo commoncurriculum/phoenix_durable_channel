@@ -8,7 +8,12 @@ Pushes == 1..MaxPush
 VARIABLES
     wants,
     conn,
+    connNo,
     chan,
+    chanConn,
+    joinConn,
+    toChan,
+    buffer,
     wantsChannel,
     joinRef,
     nextRef,
@@ -27,16 +32,22 @@ VARIABLES
     faults,
     userSteps
 
-vars == <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushed, push, pushJoinRef,
-          answers, srv, srvJoinRef, old, oldJoinRef, oldBox, handled, toServer, toClient,
-          faults, userSteps>>
+vars == <<wants, conn, connNo, chan, chanConn, joinConn, toChan, buffer, wantsChannel, joinRef,
+          nextRef, pushed, push, pushJoinRef, answers, srv, srvJoinRef, old, oldJoinRef, oldBox,
+          handled, toServer, toClient, faults, userSteps>>
 oldServer == <<old, oldJoinRef, oldBox>>
 pushes == <<pushed, push, pushJoinRef, answers>>
+cache == <<connNo, chanConn, joinConn, toChan, buffer>>
 
 Init ==
     /\ wants = FALSE
     /\ conn = "disconnected"
+    /\ connNo = 0
     /\ chan = "unjoined"
+    /\ chanConn = 0
+    /\ joinConn = 0
+    /\ toChan = <<>>
+    /\ buffer = <<>>
     /\ wantsChannel = TRUE
     /\ joinRef = 0
     /\ nextRef = 1
@@ -60,7 +71,29 @@ Pending == {"buffered", "sent"}
 SendJoin ==
     /\ joinRef' = nextRef
     /\ nextRef' = nextRef + 1
-    /\ toServer' = Append(toServer, [kind |-> "join", ref |-> nextRef])
+    /\ IF conn = "open"
+       THEN /\ toServer' = Append(toServer, [kind |-> "join", ref |-> nextRef])
+            /\ joinConn' = connNo
+            /\ UNCHANGED buffer
+       ELSE /\ buffer' = Append(buffer, [kind |-> "join", ref |-> nextRef])
+            /\ joinConn' = 0
+            /\ UNCHANGED toServer
+
+SendLeave(ref) ==
+    IF conn = "open"
+    THEN /\ toServer' = Append(toServer, [kind |-> "leave", joinRef |-> ref])
+         /\ UNCHANGED buffer
+    ELSE /\ buffer' = Append(buffer, [kind |-> "leave", joinRef |-> ref])
+         /\ UNCHANGED toServer
+
+Lost(n) ==
+    IF Broken = "openAfterCallback"
+    THEN <<[kind |-> "lost", n |-> n]>> \o toChan
+    ELSE Append(toChan, [kind |-> "lost", n |-> n])
+
+LostPending(n) == \E k \in 1..Len(toChan) : toChan[k] = [kind |-> "lost", n |-> n]
+
+ErroredNow == IF chanConn # 0 THEN "errored" ELSE "erroredOffline"
 
 AnswerAll(which, outcome) ==
     /\ push' = [i \in Pushes |-> IF i \in which THEN outcome ELSE push[i]]
@@ -90,20 +123,6 @@ Flush(ref) ==
        /\ toServer' = toServer \o [k \in 1..Len(order) |-> PushFrame(order[k], ref)]
        /\ UNCHANGED answers
 
-ChannelLosesConnection ==
-    CASE chan \in {"joined", "joining"} ->
-            /\ chan' = "erroredOffline"
-            /\ LoseSent
-      [] chan = "errored" ->
-            /\ chan' = "erroredOffline"
-            /\ UNCHANGED <<push, answers>>
-      [] chan = "leaving" ->
-            /\ chan' = "closed"
-            /\ ClosePending
-      [] OTHER ->
-            /\ UNCHANGED chan
-            /\ UNCHANGED <<push, answers>>
-
 ConnectionGone ==
     /\ toServer' = <<>>
     /\ toClient' = <<>>
@@ -123,7 +142,7 @@ YouConnect ==
     /\ conn' = "connecting"
     /\ userSteps' = userSteps + 1
     /\ UNCHANGED <<chan, wantsChannel, joinRef, nextRef, pushes, srv, srvJoinRef, oldServer,
-                   handled, toServer, toClient, faults>>
+                   handled, toServer, toClient, faults, cache>>
 
 YouDisconnect ==
     /\ userSteps < MaxUserSteps
@@ -131,106 +150,145 @@ YouDisconnect ==
     /\ wants' = FALSE
     /\ conn' = "disconnected"
     /\ userSteps' = userSteps + 1
-    /\ IF conn = "open"
-       THEN ChannelLosesConnection
-       ELSE UNCHANGED <<chan, push, answers>>
+    /\ toChan' = IF conn = "open" THEN Lost(connNo) ELSE toChan
     /\ ConnectionGone
-    /\ UNCHANGED <<wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srvJoinRef, handled,
-                   faults>>
+    /\ UNCHANGED <<chan, wantsChannel, joinRef, nextRef, pushes, srvJoinRef, handled, faults,
+                   connNo, chanConn, joinConn, buffer>>
 
 ConnectionOpens ==
     /\ conn = "connecting"
     /\ conn' = "open"
-    /\ IF chan = "waitingForSocket" \/ (chan = "erroredOffline" /\ Broken # "noRejoinOnOpen")
-       THEN /\ chan' = "joining"
-            /\ SendJoin
-       ELSE UNCHANGED <<chan, joinRef, nextRef, toServer>>
-    /\ UNCHANGED <<wants, wantsChannel, pushes, srv, srvJoinRef, oldServer, handled,
-                   toClient, faults, userSteps>>
+    /\ connNo' = connNo + 1
+    /\ toChan' = Append(toChan, [kind |-> "open", n |-> connNo + 1])
+    /\ toServer' = toServer \o buffer
+    /\ buffer' = <<>>
+    /\ joinConn' = IF \E k \in 1..Len(buffer) : buffer[k] = [kind |-> "join", ref |-> joinRef]
+                   THEN connNo + 1
+                   ELSE joinConn
+    /\ UNCHANGED <<wants, chan, chanConn, wantsChannel, joinRef, nextRef, pushes, srv,
+                   srvJoinRef, oldServer, handled, toClient, faults, userSteps>>
 
 ConnectionDrops ==
     /\ faults < MaxFaults
     /\ conn \in {"connecting", "open"}
     /\ faults' = faults + 1
     /\ conn' = IF Broken = "closeIsFinal" THEN "disconnected" ELSE "waiting"
-    /\ IF conn = "open"
-       THEN ChannelLosesConnection
-       ELSE UNCHANGED <<chan, push, answers>>
+    /\ toChan' = IF conn = "open" THEN Lost(connNo) ELSE toChan
     /\ ConnectionGone
-    /\ UNCHANGED <<wants, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srvJoinRef,
-                   handled, userSteps>>
+    /\ UNCHANGED <<wants, chan, wantsChannel, joinRef, nextRef, pushes, srvJoinRef, handled,
+                   userSteps, connNo, chanConn, joinConn, buffer>>
 
 ReconnectTimerFires ==
     /\ conn = "waiting"
     /\ conn' = "connecting"
     /\ UNCHANGED <<wants, chan, wantsChannel, joinRef, nextRef, pushes, srv, srvJoinRef,
-                   oldServer, handled, toServer, toClient, faults, userSteps>>
+                   oldServer, handled, toServer, toClient, faults, userSteps, cache>>
 
 ---------------------------------------------------------------------------
 
+ChannelHearsOpen ==
+    /\ toChan # <<>>
+    /\ Head(toChan).kind = "open"
+    /\ toChan' = Tail(toChan)
+    /\ chanConn' = Head(toChan).n
+    /\ IF \/ chan \in {"waitingForSocket", "errored"}
+          \/ chan = "erroredOffline" /\ Broken # "noRejoinOnOpen"
+       THEN /\ chan' = "joining"
+            /\ SendJoin
+       ELSE UNCHANGED <<chan, joinRef, nextRef, toServer, buffer, joinConn>>
+    /\ UNCHANGED <<wants, conn, connNo, wantsChannel, pushes, srv, srvJoinRef, oldServer,
+                   handled, toClient, faults, userSteps>>
+
+ChannelHearsLost ==
+    /\ toChan # <<>>
+    /\ Head(toChan).kind = "lost"
+    /\ toChan' = Tail(toChan)
+    /\ LET n == Head(toChan).n
+           closes == chanConn = n
+       IN /\ chanConn' = IF closes THEN 0 ELSE chanConn
+          /\ CASE chan \in {"joined", "joining"} /\ joinConn = n ->
+                    /\ chan' = IF closes THEN "erroredOffline" ELSE "errored"
+                    /\ LoseSent
+               [] chan = "errored" /\ closes ->
+                    /\ chan' = "erroredOffline"
+                    /\ UNCHANGED <<push, answers>>
+               [] chan = "leaving" /\ closes ->
+                    /\ chan' = "closed"
+                    /\ ClosePending
+               [] OTHER ->
+                    /\ UNCHANGED chan
+                    /\ UNCHANGED <<push, answers>>
+    /\ UNCHANGED <<wants, conn, connNo, joinConn, buffer, wantsChannel, joinRef, nextRef,
+                   pushed, pushJoinRef, srv, srvJoinRef, oldServer, handled, toServer,
+                   toClient, faults, userSteps>>
+
 YouJoin ==
     /\ chan = "unjoined"
-    /\ IF conn = "open"
+    /\ IF chanConn # 0
        THEN /\ chan' = "joining"
             /\ SendJoin
        ELSE /\ chan' = "waitingForSocket"
-            /\ UNCHANGED <<joinRef, nextRef, toServer>>
-    /\ UNCHANGED <<wants, conn, wantsChannel, pushes, srv, srvJoinRef, oldServer, handled,
-                   toClient, faults, userSteps>>
+            /\ UNCHANGED <<joinRef, nextRef, toServer, buffer, joinConn>>
+    /\ UNCHANGED <<wants, conn, connNo, chanConn, toChan, wantsChannel, pushes, srv,
+                   srvJoinRef, oldServer, handled, toClient, faults, userSteps>>
 
 JoinTimesOut ==
     /\ faults < MaxFaults
     /\ chan = "joining"
     /\ faults' = faults + 1
-    /\ chan' = "errored"
+    /\ chan' = ErroredNow
     /\ LoseSent
-    /\ toServer' = IF Broken = "noLeaveOnJoinTimeout"
-                   THEN toServer
-                   ELSE Append(toServer, [kind |-> "leave", joinRef |-> joinRef])
-    /\ UNCHANGED <<wants, conn, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srv,
-                   srvJoinRef, oldServer, handled, toClient, userSteps>>
+    /\ IF Broken = "noLeaveOnJoinTimeout"
+       THEN UNCHANGED <<toServer, buffer>>
+       ELSE SendLeave(joinRef)
+    /\ UNCHANGED <<wants, conn, connNo, chanConn, joinConn, toChan, wantsChannel, joinRef,
+                   nextRef, pushed, pushJoinRef, srv, srvJoinRef, oldServer, handled, toClient,
+                   userSteps>>
 
 RejoinTimerFires ==
     /\ chan = "errored"
-    /\ conn = "open"
+    /\ chanConn # 0
     /\ chan' = "joining"
     /\ SendJoin
-    /\ UNCHANGED <<wants, conn, wantsChannel, pushes, srv, srvJoinRef, oldServer, handled,
-                   toClient, faults, userSteps>>
+    /\ UNCHANGED <<wants, conn, connNo, chanConn, toChan, wantsChannel, pushes, srv,
+                   srvJoinRef, oldServer, handled, toClient, faults, userSteps>>
 
 YouLeave ==
     /\ wantsChannel
     /\ wantsChannel' = FALSE
-    /\ IF chan \in {"joining", "joined"} /\ conn = "open"
+    /\ IF chan \in {"joining", "joined"} /\ chanConn # 0
        THEN /\ chan' = "leaving"
             /\ LoseSent
-            /\ toServer' = Append(toServer, [kind |-> "leave", joinRef |-> joinRef])
+            /\ SendLeave(joinRef)
        ELSE /\ chan' = "closed"
             /\ ClosePending
-            /\ UNCHANGED toServer
-    /\ UNCHANGED <<wants, conn, joinRef, nextRef, pushed, pushJoinRef, srv, srvJoinRef,
-                   oldServer, handled, toClient, faults, userSteps>>
+            /\ IF chan \in {"joining", "joined"} /\ Broken # "leaveOnlyWhenOpen"
+               THEN SendLeave(joinRef)
+               ELSE UNCHANGED <<toServer, buffer>>
+    /\ UNCHANGED <<wants, conn, connNo, chanConn, joinConn, toChan, joinRef, nextRef, pushed,
+                   pushJoinRef, srv, srvJoinRef, oldServer, handled, toClient, faults,
+                   userSteps>>
 
 LeaveTimesOut ==
     /\ chan = "leaving"
     /\ chan' = "closed"
     /\ ClosePending
     /\ UNCHANGED <<wants, conn, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srv,
-                   srvJoinRef, oldServer, handled, toServer, toClient, faults, userSteps>>
+                   srvJoinRef, oldServer, handled, toServer, toClient, faults, userSteps, cache>>
 
 YouPush ==
     /\ pushed < MaxPush
     /\ chan # "unjoined"
     /\ LET i == pushed + 1
        IN /\ pushed' = i
-          /\ IF chan = "joined"
+          /\ IF chan = "joined" /\ conn = "open"
              THEN /\ push' = [push EXCEPT ![i] = "sent"]
                   /\ pushJoinRef' = [pushJoinRef EXCEPT ![i] = joinRef]
                   /\ toServer' = Append(toServer, PushFrame(i, joinRef))
              ELSE /\ push' = [push EXCEPT ![i] = "buffered"]
                   /\ UNCHANGED <<pushJoinRef, toServer>>
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, answers, srv, srvJoinRef,
-                   oldServer, handled, toClient, faults, userSteps>>
+                   oldServer, handled, toClient, faults, userSteps, cache>>
 
 PushTimesOut ==
     /\ Broken # "noPushTimer"
@@ -238,7 +296,7 @@ PushTimesOut ==
         /\ push[i] \in Pending
         /\ AnswerAll({i}, "timeout")
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srv,
-                   srvJoinRef, oldServer, handled, toServer, toClient, faults, userSteps>>
+                   srvJoinRef, oldServer, handled, toServer, toClient, faults, userSteps, cache>>
 
 ---------------------------------------------------------------------------
 
@@ -252,7 +310,7 @@ ServerJoins ==
                    \o (IF srv = "joined" THEN <<[kind |-> "close", joinRef |-> srvJoinRef]>> ELSE <<>>)
                    \o <<[kind |-> "joinReply", ref |-> Head(toServer).ref, ok |-> TRUE]>>
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushes, oldServer,
-                   handled, faults, userSteps>>
+                   handled, faults, userSteps, cache>>
 
 ServerDeniesJoin ==
     /\ faults < MaxFaults
@@ -263,7 +321,7 @@ ServerDeniesJoin ==
     /\ toServer' = Tail(toServer)
     /\ toClient' = Append(toClient, [kind |-> "joinReply", ref |-> Head(toServer).ref, ok |-> FALSE])
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushes, srv, srvJoinRef,
-                   oldServer, handled, userSteps>>
+                   oldServer, handled, userSteps, cache>>
 
 ServerLeaves ==
     /\ toServer # <<>>
@@ -276,7 +334,7 @@ ServerLeaves ==
        ELSE /\ UNCHANGED srv
             /\ toClient' = Append(toClient, [kind |-> "leaveReply", joinRef |-> Head(toServer).joinRef])
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushes, srvJoinRef,
-                   oldServer, handled, faults, userSteps>>
+                   oldServer, handled, faults, userSteps, cache>>
 
 ServerAnswersPush ==
     /\ toServer # <<>>
@@ -291,7 +349,7 @@ ServerAnswersPush ==
                                 THEN [kind |-> "reply", id |-> m.id, joinRef |-> m.joinRef, ok |-> TRUE]
                                 ELSE [kind |-> "reply", id |-> m.id, joinRef |-> 0, ok |-> FALSE])
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushes, srv, srvJoinRef,
-                   oldServer, faults, userSteps>>
+                   oldServer, faults, userSteps, cache>>
 
 ServerChannelCrashes ==
     /\ faults < MaxFaults
@@ -300,7 +358,7 @@ ServerChannelCrashes ==
     /\ srv' = "none"
     /\ toClient' = Append(toClient, [kind |-> "error", joinRef |-> srvJoinRef])
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushes, srvJoinRef,
-                   oldServer, handled, toServer, userSteps>>
+                   oldServer, handled, toServer, userSteps, cache>>
 
 OldRuns ==
     /\ oldBox # <<>>
@@ -323,14 +381,14 @@ OldRuns ==
                               \o <<[kind |-> "close", joinRef |-> srvJoinRef]>>
                          ELSE toClient
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushes, srvJoinRef,
-                   toServer, faults, userSteps>>
+                   toServer, faults, userSteps, cache>>
 
 OldStops ==
     /\ old = "joined" \/ oldBox # <<>>
     /\ old' = "none"
     /\ oldBox' = <<>>
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushes, srv, srvJoinRef,
-                   oldJoinRef, handled, toServer, toClient, faults, userSteps>>
+                   oldJoinRef, handled, toServer, toClient, faults, userSteps, cache>>
 
 ---------------------------------------------------------------------------
 
@@ -347,12 +405,12 @@ JoinReplyArrives ==
           THEN /\ chan' = "joined"
                /\ Flush(joinRef)
           ELSE IF counts
-          THEN /\ chan' = "errored"
+          THEN /\ chan' = ErroredNow
                /\ LoseSent
                /\ UNCHANGED <<pushJoinRef, toServer>>
           ELSE UNCHANGED <<chan, push, pushJoinRef, answers, toServer>>
     /\ UNCHANGED <<wants, conn, wantsChannel, joinRef, nextRef, pushed, srv, srvJoinRef,
-                   oldServer, handled, faults, userSteps>>
+                   oldServer, handled, faults, userSteps, cache>>
 
 LeaveReplyArrives ==
     /\ toClient # <<>>
@@ -363,7 +421,7 @@ LeaveReplyArrives ==
             /\ ClosePending
        ELSE UNCHANGED <<chan, push, answers>>
     /\ UNCHANGED <<wants, conn, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srv,
-                   srvJoinRef, oldServer, handled, toServer, faults, userSteps>>
+                   srvJoinRef, oldServer, handled, toServer, faults, userSteps, cache>>
 
 CloseArrives ==
     /\ toClient # <<>>
@@ -374,7 +432,7 @@ CloseArrives ==
             /\ ClosePending
        ELSE UNCHANGED <<chan, push, answers>>
     /\ UNCHANGED <<wants, conn, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srv,
-                   srvJoinRef, oldServer, handled, toServer, faults, userSteps>>
+                   srvJoinRef, oldServer, handled, toServer, faults, userSteps, cache>>
 
 ErrorArrives ==
     /\ toClient # <<>>
@@ -382,11 +440,11 @@ ErrorArrives ==
     /\ toClient' = Tail(toClient)
     /\ IF chan \in {"joining", "joined"} /\ Member(Head(toClient))
           /\ ~(Broken = "joinedIgnoresError" /\ chan = "joined")
-       THEN /\ chan' = "errored"
+       THEN /\ chan' = ErroredNow
             /\ LoseSent
        ELSE UNCHANGED <<chan, push, answers>>
     /\ UNCHANGED <<wants, conn, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srv,
-                   srvJoinRef, oldServer, handled, toServer, faults, userSteps>>
+                   srvJoinRef, oldServer, handled, toServer, faults, userSteps, cache>>
 
 PushReplyArrives ==
     /\ toClient # <<>>
@@ -397,16 +455,17 @@ PushReplyArrives ==
           THEN AnswerAll({m.id}, IF m.ok THEN "ok" ELSE "error")
           ELSE UNCHANGED <<push, answers>>
     /\ UNCHANGED <<wants, conn, chan, wantsChannel, joinRef, nextRef, pushed, pushJoinRef, srv,
-                   srvJoinRef, oldServer, handled, toServer, faults, userSteps>>
+                   srvJoinRef, oldServer, handled, toServer, faults, userSteps, cache>>
 
 ---------------------------------------------------------------------------
 
 Settled ==
     /\ toServer = <<>>
     /\ toClient = <<>>
+    /\ toChan = <<>>
     /\ \A i \in Pushes : push[i] \notin Pending
     /\ chan \notin {"joining", "leaving"}
-    /\ ~(chan = "errored" /\ conn = "open")
+    /\ ~(chan = "errored" /\ chanConn # 0)
     /\ conn \notin {"connecting", "waiting"}
     /\ old = "none"
     /\ oldBox = <<>>
@@ -418,6 +477,7 @@ NoPush == pushed = 0
 Next ==
     \/ YouConnect \/ YouDisconnect \/ YouJoin \/ YouLeave \/ YouPush
     \/ ConnectionOpens \/ ConnectionDrops \/ ReconnectTimerFires
+    \/ ChannelHearsOpen \/ ChannelHearsLost
     \/ JoinTimesOut \/ RejoinTimerFires \/ LeaveTimesOut \/ PushTimesOut
     \/ ServerJoins \/ ServerDeniesJoin \/ ServerLeaves \/ ServerAnswersPush \/ ServerChannelCrashes
     \/ OldRuns \/ OldStops
@@ -428,6 +488,7 @@ Spec ==
     /\ Init
     /\ [][Next]_vars
     /\ WF_vars(ConnectionOpens) /\ WF_vars(ReconnectTimerFires) /\ WF_vars(RejoinTimerFires)
+    /\ WF_vars(ChannelHearsOpen) /\ WF_vars(ChannelHearsLost)
     /\ WF_vars(LeaveTimesOut) /\ WF_vars(PushTimesOut)
     /\ WF_vars(ServerJoins) /\ WF_vars(ServerLeaves) /\ WF_vars(ServerAnswersPush)
     /\ WF_vars(OldStops)
@@ -440,7 +501,10 @@ ReconnectsUnlessAsked == conn = "disconnected" => ~wants
 
 WaitingPushCanBeAnswered ==
     \A i \in Pushes :
-        push[i] = "sent" => (conn = "open" /\ chan = "joined" /\ pushJoinRef[i] = joinRef)
+        push[i] = "sent" =>
+            /\ chan = "joined"
+            /\ pushJoinRef[i] = joinRef
+            /\ conn = "open" \/ LostPending(joinConn)
 
 AnsweredOnce == \A i \in Pushes : answers[i] <= 1
 
@@ -460,9 +524,13 @@ JoinedIsReal ==
         \/ srv = "joined" /\ srvJoinRef = joinRef
         \/ \E i \in 1..Len(toClient) : toClient[i].kind \in {"error", "close"}
                                        /\ toClient[i].joinRef = joinRef
+        \/ LostPending(joinConn)
 
 NoChannelWaitsOnAnOpenConnection ==
-    conn = "open" => chan \notin {"waitingForSocket", "erroredOffline"}
+    (conn = "open" /\ toChan = <<>>) => chan \notin {"waitingForSocket", "erroredOffline"}
+
+KnowsWhetherTheSocketIsOpen ==
+    toChan = <<>> => chanConn = IF conn = "open" THEN connNo ELSE 0
 
 RejoinsWhenItCan ==
     (wants /\ wantsChannel /\ chan # "unjoined")
