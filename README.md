@@ -143,7 +143,7 @@ and in `lib/my_app/application.ex`:
 children = [PhoenixDurableChannel.Stream.DurableStreams, MyAppWeb.Endpoint]
 ```
 
-Each node keeps where it read each topic's streams to, and where its recent replies are, while a channel has the topic and for `keep_offsets_for` (five minutes by default, `{PhoenixDurableChannel.Stream.DurableStreams, keep_offsets_for: :timer.minutes(5)}`) after the topic's last channel leaves. So a reconnect to the same node does not read the streams again from the start, and a push sent again is looked up from near its reply, on any node, after one read of the replies. Forgetting drops only this cache, never the ledger.
+Each node keeps where it read each topic's streams to, and where its recent replies are, while a channel has the topic and for `keep_offsets_for` (five minutes by default, `{PhoenixDurableChannel.Stream.DurableStreams, keep_offsets_for: :timer.minutes(5)}`) after the topic's last channel leaves. So a reconnect to the same node does not read the streams again from the start, and a push sent again is looked up from the start of the page before its reply, on any node, after one read of the replies: a node keeps the 64 newest reply offsets it learned, one per page it read and one per reply it wrote. Forgetting drops only this cache, never the ledger.
 
 ### 2c. The channel: one `use` line
 
@@ -281,7 +281,7 @@ A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3
 **Read through the channel** (`Mongo`, `Memory`, or your own `ThroughChannel`):
 
 - `push_durable/3` pushes each message with its number, and `since/3` answers the client's `phx_read {after}` a page at a time.
-- The server resends what it kept after `after`, then replies `{sent, epoch}`. Until that reply the client holds what arrives; after it, each message must be the next one, and one that isn't ends the read, as losing the connection does. The client reads again from the last message it delivered.
+- The server resends what it kept after `after`, then replies `{sent, epoch}`. Until that reply the client holds what arrives; after it, each message must be the next one. One past it ends the read, as losing the connection does, and so does one the client already passed, which is how a store that numbers afresh shows. Only when the reply's `sent` is below the client's `after` (an `after` past the stream's last number) are passed numbers ignored, until the next one arrives. The client reads again from the last message it delivered. Pushes carry no epoch, so a store that numbers afresh under a joined channel is noticed only when its first new number is one the client already passed.
 - The read has no timeout: a server still paging is still sending. A read the server answers with an error is logged through the socket's `logger` and asked again after a backoff.
 - The epoch names one numbering of the stream. A reply in another epoch ends the read, and the client reads that epoch from where it last got to in it, or from the start.
 
