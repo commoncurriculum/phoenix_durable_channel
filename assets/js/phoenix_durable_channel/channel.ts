@@ -76,7 +76,7 @@ export class Channel {
   private readonly bindings: Array<Binding> = []
   private bindingRef = 0
   private readonly pushes = new Set<Push>()
-  private leavePush = new Reply()
+  private readonly leavePush = new Reply()
 
   constructor(
     readonly topic: string,
@@ -154,15 +154,13 @@ export class Channel {
   }
 
   leave(timeout = this.timeout): Reply {
-    if (this.state === "leaving") return this.leavePush
-    const leavePush = new Reply()
     if (this.actor.getSnapshot().status === "done") {
-      leavePush.answer("ok", {})
-      return leavePush
+      const left = new Reply()
+      left.answer("ok", {})
+      return left
     }
-    this.leavePush = leavePush
-    this.actor.send({ type: "LEAVE", timeout })
-    return leavePush
+    if (this.state !== "leaving") this.actor.send({ type: "LEAVE", timeout })
+    return this.leavePush
   }
 
   push(event: string, payload?: unknown, timeout?: number): Push
