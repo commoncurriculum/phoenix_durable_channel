@@ -40,6 +40,8 @@ export interface SocketOptions {
   reconnectAfterMs?: (tries: number) => number
   rejoinAfterMs?: (tries: number) => number
   logger?: (kind: string, message: string, data?: unknown) => void
+  debug?: boolean
+  sessionStorage?: Storage
   longpollerTimeout?: number
   params?: Params | (() => Params)
   authToken?: string | (() => string)
@@ -98,7 +100,11 @@ export class Socket {
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT
     this.vsn = options.vsn ?? DEFAULT_VSN
     this.longpollerTimeout = options.longpollerTimeout ?? 20_000
-    this.logger = options.logger
+    this.logger =
+      options.logger ??
+      (options.debug
+        ? (kind, message, data) => console.log(`${kind}: ${message}`, data)
+        : undefined)
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000
     const json = options.transport === LongPoll
     this.encode =

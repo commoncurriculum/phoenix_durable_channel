@@ -276,6 +276,10 @@ test("builds its URL from the endpoint, params and vsn", () => {
   expect(relative.hasLogger()).toBe(false)
   expect(relative.timeout).toBe(10_000)
 
+  const debugging = new Socket("/socket", { debug: true, sessionStorage: window.sessionStorage })
+  expect(debugging.hasLogger()).toBe(true)
+  debugging.log("transport", "debug logs to the console", { debug: true })
+
   const logs: Array<string> = []
   const deprecated = new Socket(`${phoenixUrl}/socket`, {
     timeout: 500,
