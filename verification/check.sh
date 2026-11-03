@@ -20,7 +20,7 @@ tlc() {
 failures=0
 
 check() {
-  local module="$1" constants="$2"
+  local module="$1" constants="$2" liveness="${3:-$2}"
   echo "$module, the code as it is: every rule holds"
   cp "$here/$module.cfg" "$work/$module-as-is.cfg"
   if ! out="$(tlc "$module" "$module-as-is.cfg")" || ! grep -q "No error has been found" <<<"$out"; then
@@ -29,9 +29,20 @@ check() {
     exit 1
   fi
   grep "distinct states found" <<<"$out"
+  if [ -f "$here/${module}Liveness.cfg" ]; then
+    echo "$module, the code as it is: every liveness rule holds"
+    cp "$here/${module}Liveness.cfg" "$work/$module-liveness.cfg"
+    if ! out="$(tlc "$module" "$module-liveness.cfg")" || ! grep -q "No error has been found" <<<"$out"; then
+      echo "$out" | grep -v JAVA_TOOL_OPTIONS
+      echo "FAILED: a liveness rule breaks on the code as it is."
+      exit 1
+    fi
+    grep "distinct states found" <<<"$out"
+  fi
   while read -r broken rule kind; do
     printf 'SPECIFICATION Spec\nCONSTANTS\n%s\n  Broken = "%s"\nCHECK_DEADLOCK FALSE\n%s %s\n' \
-      "$constants" "$broken" "$kind" "$rule" >"$work/$module-$broken-$rule.cfg"
+      "$([ "$kind" = PROPERTY ] && echo "$liveness" || echo "$constants")" "$broken" "$kind" "$rule" \
+      >"$work/$module-$broken-$rule.cfg"
     out="$(tlc "$module" "$module-$broken-$rule.cfg" || true)"
     if grep -qE "Invariant $rule is violated|Temporal properties were violated" <<<"$out"; then
       echo "  breaks as it should: $rule, when $broken"
@@ -62,10 +73,21 @@ openAfterCallback KnowsWhetherTheSocketIsOpen INVARIANT
 leaveOnlyWhenOpen ServerForgetsClosedChannel INVARIANT
 EOF
 
-check DurableMessages "  MaxPush = 4
-  MaxFaults = 2" <<'EOF'
+check DurableMessages "  MaxPush = 2
+  MaxPublish = 0
+  MaxOthers = 0
+  Afters = {}
+  MaxFaults = 1
+  MaxStops = 1
+  Reads = \"channel\"" "  MaxPush = 1
+  MaxPublish = 1
+  MaxOthers = 0
+  Afters = {}
+  MaxFaults = 1
+  MaxStops = 0
+  Reads = \"channel\"" <<'EOF'
 noReplace HandledOnceUnlessCrashed INVARIANT
-countBeforeRecord CountIsRecorded INVARIANT
+noCountRecord AnsweredAsHandled INVARIANT
 noResend CatchesUp PROPERTY
 renumberHandled HandledOnceUnlessCrashed INVARIANT
 keepAnswered AnsweredOnce INVARIANT
@@ -78,7 +100,6 @@ retryIsAnswer OnlyTakenAreAnswered INVARIANT
 unmatchedIsAnswer OnlyTakenAreAnswered INVARIANT
 staleCount HandledOnceUnlessCrashed INVARIANT
 syncBeforeReplace HandledOnceUnlessCrashed INVARIANT
-resetRereads HandledOnceUnlessCrashed INVARIANT
 EOF
 
 check ChannelRead "  NodeCount = 2

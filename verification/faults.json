@@ -4,7 +4,7 @@
     "what": "The client's connection closes at any step; frames in flight either way are lost.",
     "model": [
       "PhoenixDurableChannel.ConnectionDrops",
-      "DurableMessages.Drops",
+      "DurableMessages.ClientDisconnects",
       "ChannelRead.Drops",
       "SocketBuffer.Drops"
     ],
@@ -21,7 +21,7 @@
   {
     "fault": "channel process crashes",
     "what": "The server's channel process dies at any step, before or after appending what it ran.",
-    "model": ["PhoenixDurableChannel.ServerChannelCrashes", "DurableMessages.ServerCrashes"],
+    "model": ["PhoenixDurableChannel.ServerChannelCrashes", "DurableMessages.ProcessCrashes"],
     "jepsen": ["kill"],
     "tests": ["a crashed channel errors, fails its in-flight pushes at once, and rejoins"]
   },
@@ -35,14 +35,14 @@
   {
     "fault": "handler cannot take a push",
     "what": "The app's handle_in returns {:retry, reason, socket}.",
-    "model": ["DurableMessages.ServerCannotTake"],
+    "model": ["DurableMessages.ServerTakes"],
     "jepsen": [],
     "tests": ["a message the server could not take is sent again, with the ones after it, in order"]
   },
   {
     "fault": "handler stops the channel",
     "what": "The app's handle_in returns a stop.",
-    "model": [],
+    "model": ["DurableMessages.ServerTakes"],
     "jepsen": [],
     "tests": ["a durable push whose handler stops the channel is answered and recorded"]
   },
@@ -56,11 +56,7 @@
   {
     "fault": "two processes for one topic",
     "what": "A rejoin reaches a new process while the old connection's process still runs pushes.",
-    "model": [
-      "DurableMessages.OldTakes",
-      "DurableMessages.OldRecords",
-      "PhoenixDurableChannel.OldRuns"
-    ],
+    "model": ["DurableMessages.ServerTellsReplaced", "PhoenixDurableChannel.OldRuns"],
     "jepsen": ["partition", "cut-off-clients"],
     "tests": [
       "a message the old connection's process is still running when the client rejoins runs once"
@@ -69,14 +65,14 @@
   {
     "fault": "late append from a killed process",
     "what": "A replaced process is killed after 5 s, but its append, already on its way, lands after the new process read the count.",
-    "model": [],
+    "model": ["DurableMessages.LateAppendLands"],
     "jepsen": [],
     "tests": []
   },
   {
     "fault": "late join from an abandoned connection",
     "what": "A join the client gave up on reaches the server after a newer one.",
-    "model": ["DurableMessages.Replaced"],
+    "model": ["DurableMessages.JoinTimesOut", "DurableMessages.ServerTellsReplaced"],
     "jepsen": [],
     "tests": [
       "a late join from a connection the client left replaces its channel, and the client rejoins"
@@ -94,17 +90,30 @@
   {
     "fault": "store forgets messages",
     "what": "The store drops messages a client has not read, by retention, a size cap or a restart, at any step.",
-    "model": ["DurableMessages.Forgets", "ChannelRead.StoreForgets", "StreamReader.StoreForgets"],
+    "model": [
+      "DurableMessages.StoreForgets",
+      "ChannelRead.StoreForgets",
+      "StreamReader.StoreForgets"
+    ],
     "jepsen": [],
     "tests": ["a durable push whose answer the client skipped while joined is answered reply_lost"]
   },
   {
     "fault": "store numbers afresh",
     "what": "The store loses a topic's stream and numbers it from 1 again (a new epoch, a deleted stream, a reset count).",
-    "model": ["ChannelRead.StoreStartsAgain", "DurableMessages.LedgerResets"],
+    "model": ["ChannelRead.StoreStartsAgain", "DurableMessages.StoreStartsAgain"],
     "jepsen": [],
     "tests": [
       "a store that numbers afresh while the channel stays joined is read again from its start"
+    ]
+  },
+  {
+    "fault": "store goes back to an earlier numbering",
+    "what": "The store returns to a stream it numbered before, with what it held then (a failover to an older store, a restore from backup).",
+    "model": ["DurableMessages.StoreGoesBack"],
+    "jepsen": [],
+    "tests": [
+      "a store that numbers afresh is read from its start, and one read before from where the client got to"
     ]
   },
   {
@@ -144,7 +153,7 @@
   {
     "fault": "other writers on the topic",
     "what": "A plain channel or the app appends to the topic's stream with no count.",
-    "model": ["ChannelRead.OtherAppends"],
+    "model": ["ChannelRead.OtherAppends", "DurableMessages.OtherAppends"],
     "jepsen": [],
     "tests": [
       "a channel joined without durable messages appends no count, so a durable join after it counts on however many it appended"
@@ -165,12 +174,5 @@
     "model": [],
     "jepsen": ["partition"],
     "tests": ["a lost LongPoll session closes the connection, so channels rejoin on the new one"]
-  },
-  {
-    "fault": "client reloads",
-    "what": "A new client joins a topic an earlier client used, numbering its pushes from 1.",
-    "model": [],
-    "jepsen": [],
-    "tests": []
   }
 ]
