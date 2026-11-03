@@ -9,7 +9,7 @@ import {
   type Resume,
   type StreamMessage,
 } from "../assets/js/phoenix_durable_channel/stream"
-import { answer, join, openSocket, waitFor } from "./support/helpers"
+import { answer, join, openSocket, phoenixUrl, waitFor } from "./support/helpers"
 
 const s2Url = inject("s2Url")
 const durableStreamsUrl = inject("durableStreamsUrl")
@@ -21,13 +21,9 @@ function durableTopic(name: string): string {
 }
 
 async function appendToS2(stream: string, bodies: Array<string>): Promise<void> {
-  const records = bodies.map((body) => ({
-    body: JSON.stringify({ event: "update", payload: { body } }),
-  }))
-  const response = await fetch(`${s2Url}/v1/streams/${encodeURIComponent(stream)}/records`, {
+  const response = await fetch(`${phoenixUrl.replace("ws", "http")}/s2/append`, {
     method: "POST",
-    headers: { "content-type": "application/json", "s2-basin": basin },
-    body: JSON.stringify({ records }),
+    body: JSON.stringify({ stream, bodies }),
   })
   expect(response.ok).toBe(true)
 }

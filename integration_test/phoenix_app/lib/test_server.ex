@@ -5,6 +5,7 @@ defmodule TestServer.Application do
     children = [
       {Phoenix.PubSub, name: TestServer.PubSub},
       TestServer.Joins,
+      TestServer.Traces,
       {PhoenixDurableChannel.Stream.Memory, kept: 2000, forget_after: 2000},
       {PhoenixDurableChannel.Stream.DurableStreams, keep_offsets_for: 2000},
       {S2,
@@ -37,6 +38,45 @@ defmodule TestServer.Joins do
   def count(topic), do: Agent.get(__MODULE__, &Map.get(&1, topic, 0))
 
   def first_time?(key), do: increment(key) == 1
+end
+
+defmodule TestServer.Traces do
+  use Agent
+
+  @events [
+    :join,
+    :replace,
+    :kill,
+    :register,
+    :reader,
+    :received,
+    :sync,
+    :push,
+    :append,
+    :replaced
+  ]
+
+  def start_link(_) do
+    :telemetry.attach_many(
+      __MODULE__,
+      Enum.map(@events, &[:phoenix_durable_channel, &1]),
+      &__MODULE__.record/4,
+      nil
+    )
+
+    Agent.start_link(fn -> %{} end, name: __MODULE__)
+  end
+
+  def record([:phoenix_durable_channel, type], _measurements, metadata, _config) do
+    event = Map.put(Map.delete(metadata, :topic), :type, type)
+
+    Agent.update(
+      __MODULE__,
+      &Map.update(&1, metadata.topic, [event], fn events -> [event | events] end)
+    )
+  end
+
+  def events(topic), do: Agent.get(__MODULE__, &Enum.reverse(Map.get(&1, topic, [])))
 end
 
 defmodule TestServer.Presence do
@@ -74,7 +114,59 @@ defmodule TestServer.Endpoint do
   )
 
   plug(:durable_streams)
+  plug(:traces)
+  plug(:s2_append)
   plug(:health)
+
+  def traces(%{method: "POST", path_info: ["traces"]} = connection, _options) do
+    {:ok, body, connection} = Plug.Conn.read_body(connection, length: :infinity)
+    %{"test" => test, "topic" => topic, "client" => client} = Jason.decode!(body)
+    directory = System.fetch_env!("TRACES")
+    File.mkdir_p!(directory)
+
+    File.write!(
+      Path.join(directory, "#{System.unique_integer([:positive, :monotonic])}.json"),
+      Jason.encode!(%{
+        test: test,
+        topic: topic,
+        client: client,
+        server: TestServer.Traces.events(topic)
+      })
+    )
+
+    connection |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
+  end
+
+  def traces(connection, _options), do: connection
+
+  def s2_append(%{method: "POST", path_info: ["s2", "append"]} = connection, _options) do
+    {:ok, body, connection} = Plug.Conn.read_body(connection)
+    %{"stream" => stream, "bodies" => bodies} = Jason.decode!(body)
+
+    records =
+      Enum.map(bodies, fn body ->
+        %S2.V1.AppendRecord{body: Jason.encode!(%{event: "update", payload: %{body: body}})}
+      end)
+
+    {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: last}}} =
+      S2.append(PhoenixDurableChannel.Stream.S2.config()[:name], stream, records)
+
+    Enum.each((last - length(bodies) + 1)..last//1, fn number ->
+      :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+        topic: stream,
+        join_ref: nil,
+        number: number,
+        received: nil
+      })
+    end)
+
+    connection
+    |> Plug.Conn.put_resp_header("access-control-allow-origin", "*")
+    |> Plug.Conn.send_resp(200, "ok")
+    |> Plug.Conn.halt()
+  end
+
+  def s2_append(connection, _options), do: connection
 
   def durable_streams(%{path_info: ["durable-streams" | _path]} = connection, _options),
     do:
@@ -442,7 +534,15 @@ defmodule TestServer.DurableChannel do
   end
 
   def handle_in("append_unpushed", %{"event" => event, "payload" => payload}, socket) do
-    durable_stream(socket).append(socket, event, payload, socket.assigns.phx_received)
+    number = durable_stream(socket).append(socket, event, payload, socket.assigns.phx_received)
+
+    :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      number: number,
+      received: socket.assigns.phx_received
+    })
+
     push_durable(socket, "update", %{body: "after"})
     {:reply, :ok, socket}
   end
@@ -459,13 +559,28 @@ defmodule TestServer.DurableChannel do
     }
 
     case S2.append(PhoenixDurableChannel.Stream.S2.config()[:name], socket.topic, [trim]) do
-      {:ok, _ack} -> {:reply, :ok, socket}
+      {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} ->
+        :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref,
+          number: number,
+          received: nil
+        })
+
+        {:reply, :ok, socket}
     end
   end
 
   def handle_in("publish_silently", %{"body" => body}, socket) do
     number =
       durable_stream(socket).append(socket, "update", %{body: body}, socket.assigns.phx_received)
+
+    :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      number: number,
+      received: socket.assigns.phx_received
+    })
 
     {:reply, {:ok, %{number: number}}, socket}
   end
@@ -547,12 +662,20 @@ defmodule TestServer.DurableChannel do
   end
 
   def handle_in("action", %{"body" => "skip_and_forget_reply"}, socket) do
-    durable_stream(socket).append(
-      socket,
-      "update",
-      %{body: "unseen"},
-      socket.assigns.phx_received
-    )
+    number =
+      durable_stream(socket).append(
+        socket,
+        "update",
+        %{body: "unseen"},
+        socket.assigns.phx_received
+      )
+
+    :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      number: number,
+      received: socket.assigns.phx_received
+    })
 
     send(self(), :forget)
     {:reply, :ok, socket}
@@ -576,13 +699,21 @@ defmodule TestServer.DurableChannel do
   end
 
   def handle_in("publish_many_silently", %{"count" => count}, socket) do
-    Enum.each(1..count, fn number ->
-      durable_stream(socket).append(
-        socket,
-        "update",
-        %{body: number},
-        socket.assigns.phx_received
-      )
+    Enum.each(1..count, fn body ->
+      number =
+        durable_stream(socket).append(
+          socket,
+          "update",
+          %{body: body},
+          socket.assigns.phx_received
+        )
+
+      :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+        topic: socket.topic,
+        join_ref: socket.join_ref,
+        number: number,
+        received: socket.assigns.phx_received
+      })
     end)
 
     {:reply, :ok, socket}

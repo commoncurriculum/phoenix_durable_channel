@@ -1,4 +1,4 @@
-import { inject, onTestFinished } from "vitest"
+import { expect, inject, onTestFinished } from "vitest"
 import type { Channel } from "../../assets/js/phoenix_durable_channel/channel"
 import type { Push, ReplyStatus } from "../../assets/js/phoenix_durable_channel/push"
 import type { Reply } from "../../assets/js/phoenix_durable_channel/reply"
@@ -7,8 +7,26 @@ import { Socket, type SocketOptions } from "../../assets/js/phoenix_durable_chan
 export const phoenixUrl = inject("phoenixUrl")
 
 export function openSocket(path = "/socket", options: SocketOptions = {}): Socket {
-  const socket = new Socket(`${phoenixUrl}${path}`, options)
+  const test = expect.getState().currentTestName ?? ""
+  const traces = new Map<string, Array<unknown>>()
+  const socket = new Socket(`${phoenixUrl}${path}`, {
+    logger: (kind, message, data) => {
+      if (kind !== "durable") return
+      const [topic = ""] = message.split(" ")
+      traces.set(topic, [...(traces.get(topic) ?? []), data])
+    },
+    ...options,
+  })
   onTestFinished(async () => {
+    await Promise.all(
+      [...traces].map(([topic, client]) =>
+        fetch(`${phoenixUrl.replace("ws", "http")}/traces`, {
+          method: "POST",
+          mode: "no-cors",
+          body: JSON.stringify({ test, topic, client }),
+        }),
+      ),
+    )
     await Promise.all(socket.channels.map((channel) => answer(channel.leave(500))))
     await new Promise<void>((resolve) => socket.disconnect(resolve))
   })

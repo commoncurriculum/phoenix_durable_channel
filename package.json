@@ -18,6 +18,7 @@
     "test": "vitest run --coverage",
     "lint": "tsc --noEmit && node scripts/no-comments.ts",
     "faults": "node scripts/faults.ts",
+    "traces": "node scripts/traces.ts",
     "format": "prettier --write ."
   },
   "dependencies": {

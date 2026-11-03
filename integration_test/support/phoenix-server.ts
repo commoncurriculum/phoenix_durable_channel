@@ -9,8 +9,10 @@ import type { TestProject } from "vitest/node"
 
 const PORT = 4400
 const serverDirectory = fileURLToPath(new URL("../phoenix_app", import.meta.url))
+const traces = fileURLToPath(new URL("../../verification/traces", import.meta.url))
 const environment = {
   ...process.env,
+  TRACES: traces,
   PORT: `${PORT}`,
   MIX_ENV: "dev",
   ELIXIR_ERL_OPTIONS: "+fnu",
@@ -115,6 +117,7 @@ export async function setup(project: TestProject) {
   project.provide("phoenixUrl", `ws://127.0.0.1:${PORT}`)
   project.provide("s2Url", `http://127.0.0.1:${S2_PORT}`)
   project.provide("durableStreamsUrl", `http://127.0.0.1:${DURABLE_STREAMS_PORT}`)
+  rmSync(traces, { recursive: true, force: true })
   await Promise.all([startS2(), startDurableStreams(), startMongo()])
   if (await healthy()) return
   execFileSync("mix", ["do", "deps.get,", "compile"], {

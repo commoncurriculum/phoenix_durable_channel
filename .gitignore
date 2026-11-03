@@ -10,3 +10,4 @@ jepsen/phoenix_app/_build/
 jepsen/phoenix_app/deps/
 tsconfig.tsbuildinfo
 integration_test/durable_streams/wrangler.log
+verification/traces/
