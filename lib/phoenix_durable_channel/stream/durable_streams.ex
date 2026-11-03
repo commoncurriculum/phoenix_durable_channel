@@ -82,6 +82,22 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     end
   end
 
+  @impl PhoenixDurableChannel.Stream
+  def count(socket, last, received) do
+    topic = socket.topic
+
+    case post(topic, last + 1, "phx_reply", %{received: received}, received) do
+      :taken ->
+        read(topic)
+        :moved
+
+      :posted ->
+        kept = kept(topic)
+        :ets.insert(@table, {topic, %{kept | given: max(kept.given, last + 1)}})
+        last + 1
+    end
+  end
+
   def post(topic, number, event, payload, received) do
     response =
       Req.post!(url(topic),

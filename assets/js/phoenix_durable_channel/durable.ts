@@ -17,6 +17,7 @@ import {
 import type { Params } from "./url"
 import {
   decodeDurableReply,
+  isCount,
   decodePublishedReader,
   decodeReadReply,
   decodeSyncReply,
@@ -115,6 +116,7 @@ export class Durable implements ChannelExtension {
             const answered = decodeDurableReply(event.message.payload)
             if (Option.isSome(answered))
               return this.log.actor.send({ type: "ANSWERED", ...answered.value })
+            if (isCount(event.message.payload)) return
             return socket.log(
               "channel",
               `${channel.topic} passed a phx_reply that is not an answer`,

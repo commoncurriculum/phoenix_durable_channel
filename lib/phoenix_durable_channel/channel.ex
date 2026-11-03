@@ -164,6 +164,13 @@ defmodule PhoenixDurableChannel.Channel do
       join_ref: socket.join_ref
     })
 
+    socket =
+      Phoenix.Socket.assign(
+        socket,
+        :phx_fence,
+        Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+      )
+
     stream = stream_for.(socket)
     reader = stream.reader(socket)
 
@@ -174,15 +181,41 @@ defmodule PhoenixDurableChannel.Channel do
     })
 
     Phoenix.Channel.push(socket, "phx_reader", reader)
+    {:noreply, Phoenix.Socket.assign(socket, :phx_received, count(stream, socket, reader.last))}
+  end
+
+  def count(stream, socket, last) do
     received = stream.received(socket)
 
-    :telemetry.execute([:phoenix_durable_channel, :received], %{}, %{
-      topic: socket.topic,
-      join_ref: socket.join_ref,
-      received: received
-    })
+    case stream.count(socket, last, received) do
+      :moved ->
+        count(stream, socket, stream.reader(socket).last)
 
-    {:noreply, Phoenix.Socket.assign(socket, :phx_received, received)}
+      number ->
+        Enum.each((last + 1)..(number - 1)//1, fn command ->
+          :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+            topic: socket.topic,
+            join_ref: socket.join_ref,
+            number: command,
+            received: nil
+          })
+        end)
+
+        :telemetry.execute([:phoenix_durable_channel, :received], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref,
+          received: received
+        })
+
+        :telemetry.execute([:phoenix_durable_channel, :count], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref,
+          number: number,
+          received: received
+        })
+
+        received
+    end
   end
 
   def unexpected_message(message, socket) do

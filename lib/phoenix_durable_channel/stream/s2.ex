@@ -10,12 +10,36 @@ defmodule PhoenixDurableChannel.Stream.S2 do
       body: Jason.encode!(%{event: event, payload: payload, received: received})
     }
 
-    case S2.append(config()[:name], socket.topic, [record]) do
+    fence =
+      if Map.has_key?(socket.assigns, :phx_fence),
+        do: [fencing_token: socket.assigns.phx_fence],
+        else: []
+
+    case S2.append(config()[:name], socket.topic, [record], fence) do
       {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} ->
         number
 
       {:error, error} ->
         raise "S2 refused an append to #{socket.topic}: #{inspect(error)}"
+    end
+  end
+
+  @impl PhoenixDurableChannel.Stream
+  def count(socket, last, received) do
+    records = [
+      %S2.V1.AppendRecord{
+        headers: [%S2.V1.Header{name: "", value: "fence"}],
+        body: socket.assigns.phx_fence
+      },
+      %S2.V1.AppendRecord{
+        body: Jason.encode!(%{event: "phx_reply", payload: %{received: received}, received: received})
+      }
+    ]
+
+    case S2.append(config()[:name], socket.topic, records, match_seq_num: last) do
+      {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} -> number
+      {:error, %S2.Error{code: "seq_num_mismatch"}} -> :moved
+      {:error, error} -> raise "S2 refused the count of #{socket.topic}: #{inspect(error)}"
     end
   end
 

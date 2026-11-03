@@ -53,6 +53,31 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
     end
   end
 
+  @impl PhoenixDurableChannel.Stream
+  def count(socket, last, received) do
+    document = %{
+      topic: socket.topic,
+      number: last + 1,
+      event: "phx_reply",
+      payload: %{received: received},
+      received: received
+    }
+
+    case Mongo.insert_one(config()[:name], config()[:messages], document) do
+      {:ok, _result} ->
+        last + 1
+
+      {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} ->
+        :moved
+
+      {:error, %Mongo.Error{code: 11_000}} ->
+        :moved
+
+      {:error, error} ->
+        raise "Mongo refused the count of #{socket.topic}: #{Exception.message(error)}"
+    end
+  end
+
   @impl PhoenixDurableChannel.Stream.ThroughChannel
   def since(socket, number, limit) do
     latest = last(socket.topic)

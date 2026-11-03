@@ -22,6 +22,7 @@ async function ledger(channel: Channel): Promise<unknown> {
 
 describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store", (store) => {
   const params = { stream: store }
+  const recordsPerJoin = store === "s2" ? 2 : 1
 
   test("a durable push whose handler stops the channel is answered and recorded", async () => {
     const socket = openSocket("/socket", fast)
@@ -37,7 +38,7 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
 
     const second = socket.channel(name, params, { durable: true })
     await join(second)
-    expect(await ledger(second)).toEqual({ received: 1, sent: 1 })
+    expect(await ledger(second)).toEqual({ received: 1, sent: 1 + 2 * recordsPerJoin })
     expect(
       await answer(second.push("action", { body: "stop_quietly" }, { durable: true })),
     ).toEqual({
@@ -48,7 +49,7 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
 
     const third = socket.channel(name, params, { durable: true })
     await join(third)
-    expect(await ledger(third)).toEqual({ received: 2, sent: 2 })
+    expect(await ledger(third)).toEqual({ received: 2, sent: 2 + 3 * recordsPerJoin })
     expect(await answer(third.push("action", { body: "stop_ok" }, { durable: true }))).toEqual({
       status: "ok",
       response: {},
@@ -57,7 +58,7 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
 
     const fourth = socket.channel(name, params, { durable: true })
     await join(fourth)
-    expect(await ledger(fourth)).toEqual({ received: 3, sent: 3 })
+    expect(await ledger(fourth)).toEqual({ received: 3, sent: 3 + 4 * recordsPerJoin })
   })
 
   test("durable messages go both ways once and in order, beside fire-and-forget ones", async () => {
@@ -105,7 +106,7 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
       status: "ok",
       response: { number: 8 },
     })
-    expect(await ledger(channel)).toEqual({ received: 8, sent: 8 })
+    expect(await ledger(channel)).toEqual({ received: 8, sent: 8 + recordsPerJoin })
     expect((await answer(channel.push("durable"))).response).toEqual({
       durable: true,
     })
@@ -157,7 +158,7 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
       status: "error",
       response: { reason: "refused" },
     })
-    expect(await ledger(channel)).toEqual({ received: 3, sent: 4 })
+    expect(await ledger(channel)).toEqual({ received: 3, sent: 4 + 3 * recordsPerJoin })
     expect(seen).toEqual(["before"])
 
     expect(() => channel.push("action", new ArrayBuffer(1), { durable: true })).toThrow(
@@ -244,7 +245,7 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
       })),
     )
     expect(order).toEqual(["busy_once", "second", "third"])
-    expect(await ledger(channel)).toEqual({ received: 3, sent: 3 })
+    expect(await ledger(channel)).toEqual({ received: 3, sent: 3 + recordsPerJoin })
   })
 
   test("a message the old connection's process is still running when the client rejoins runs once", async () => {
@@ -366,7 +367,7 @@ describe.each(["memory", "mongo", "s2", "durable-streams"])("with the %s store",
       bodies.map((body) => ({ status: "ok", response: { body } })),
     )
     expect(most).toBe(41)
-    expect(await ledger(channel)).toEqual({ received: 41, sent: 41 })
+    expect(await ledger(channel)).toEqual({ received: 41, sent: 41 + recordsPerJoin })
   })
 })
 
@@ -408,7 +409,7 @@ describe.each(["memory", "mongo"])("reading from %s", (store) => {
     expect(freshSeen).toEqual(["welcome"])
     await answer(fresh.leave())
 
-    const resumed = socket.channel(name, params, { durable: true, after: 1 })
+    const resumed = socket.channel(name, params, { durable: true, after: 2 })
     const resumedSeen = updates(resumed)
     await join(resumed)
     await waitFor(() => resumedSeen.length === 3)
@@ -455,8 +456,8 @@ describe("with the memory store, whose kept messages and replies the test app ca
     channel.push("publish", { body: "6" })
     await waitFor(() => seen.length === 5)
     expect(seen).toEqual(["1", "2", "3", "5", "6"])
-    expect(logs).toContain(`${name} skipped durable messages 4 to 4, which the store no longer has`)
-    expect(skipped).toEqual([{ after: 3, next: 5 }])
+    expect(logs).toContain(`${name} skipped durable messages 5 to 5, which the store no longer has`)
+    expect(skipped).toEqual([{ after: 4, next: 6 }])
     await answer(channel.push("publish", { body: "7" }))
     await waitFor(() => seen.length === 6)
     expect(seen).toEqual(["1", "2", "3", "5", "6", "7"])
@@ -466,8 +467,8 @@ describe("with the memory store, whose kept messages and replies the test app ca
     channel.push("kill_transport")
     await waitFor(() => skipped.length === 2)
     expect(skipped).toEqual([
-      { after: 3, next: 5 },
-      { after: 7, next: 9 },
+      { after: 4, next: 6 },
+      { after: 8, next: 10 },
     ])
     await answer(channel.push("publish", { body: "9" }))
     await waitFor(() => seen.length === 7)
@@ -503,7 +504,7 @@ describe("with the memory store, whose kept messages and replies the test app ca
     await answer(channel.push("publish", { body: "1 again" }))
     await waitFor(() => seen.length === 3)
     expect(seen).toEqual(["1", "2", "1 again"])
-    expect(await ledger(channel)).toEqual({ received: 1, sent: 2 })
+    expect(await ledger(channel)).toEqual({ received: 1, sent: 3 })
   })
 
   test("a store that numbers afresh is read from its start, and one read before from where the client got to", async () => {
@@ -605,7 +606,7 @@ test("a durable push the server handled is answered reply_lost once the client h
   expect(await answer(forgotten)).toEqual({ status: "error", response: { reason: "reply_lost" } })
   const later = channel.push("action", { body: "later" }, { durable: true })
   expect(await answer(later)).toEqual({ status: "ok", response: { body: "later" } })
-  expect(await ledger(channel)).toEqual({ received: 2, sent: 2 })
+  expect(await ledger(channel)).toEqual({ received: 2, sent: 4 })
 })
 
 test("a durable push whose answer the client skipped while joined is answered reply_lost", async () => {
@@ -621,7 +622,7 @@ test("a durable push whose answer the client skipped while joined is answered re
   expect(channel.state).toBe("joined")
   const later = channel.push("action", { body: "later" }, { durable: true })
   expect(await answer(later)).toEqual({ status: "ok", response: { body: "later" } })
-  expect(await ledger(channel)).toEqual({ received: 2, sent: 3 })
+  expect(await ledger(channel)).toEqual({ received: 2, sent: 4 })
 })
 
 test("a Memory stream keeps what a joined channel received however long the channel stays idle", async () => {
@@ -786,7 +787,7 @@ test("a live message at or before an `after` beyond the stream's last number is 
   const name = durableTopic("ahead")
   const reads = async () =>
     ((await answer(room.push("counts", { topic: name }))).response as { reads: number }).reads
-  const channel = socket.channel(name, { stream: "slow" }, { durable: true, after: 3 })
+  const channel = socket.channel(name, { stream: "slow" }, { durable: true, after: 4 })
   const seen = updates(channel)
   await join(channel)
   await expect.poll(reads).toBe(1)
@@ -863,7 +864,51 @@ test("an S2 command record at the stream's tail leaves the count where the last 
 
   const again = socket.channel(name, params, { durable: true })
   await join(again)
-  expect(await ledger(again)).toEqual({ received: 1, sent: 2 })
+  expect(await ledger(again)).toEqual({ received: 1, sent: 6 })
+})
+
+test("on S2 an append carrying the fencing token of a join a later join replaced is refused, and the channel goes on", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(durableTopic("fenced"), { stream: "s2" }, { durable: true })
+  await join(channel)
+  const fence = ((await answer(channel.push("fence"))).response as { fence: string }).fence
+  expect((await answer(channel.push("append_fenced", { fence }))).response).toEqual({
+    appended: 3,
+  })
+
+  channel.push("kill_transport")
+  await waitFor(() => channel.state !== "joined")
+  await waitFor(() => channel.state === "joined")
+  expect((await answer(channel.push("fence"))).response).not.toEqual({ fence })
+  expect((await answer(channel.push("append_fenced", { fence }))).response).toEqual({
+    refused: "fencing_token_mismatch",
+  })
+  expect(await answer(channel.push("action", { body: "after" }, { durable: true }))).toEqual({
+    status: "ok",
+    response: { body: "after" },
+  })
+  expect(await ledger(channel)).toEqual({ received: 1, sent: 6 })
+})
+
+test("a join whose count record another append beat reads the stream again and counts after it", async () => {
+  const socket = openSocket("/socket", fast)
+  socket.connect()
+  const channel = socket.channel(
+    durableTopic("contended"),
+    { stream: "contended" },
+    { durable: true },
+  )
+  const seen = updates(channel)
+  await join(channel)
+  await waitFor(() => seen.length === 1)
+  expect(seen).toEqual(["between"])
+  expect(await ledger(channel)).toEqual({ received: 0, sent: 2 })
+  expect(await answer(channel.push("action", { body: "first" }, { durable: true }))).toEqual({
+    status: "ok",
+    response: { body: "first" },
+  })
+  expect(await ledger(channel)).toEqual({ received: 1, sent: 3 })
 })
 
 test("the count is read from the newest message that has one, past S2 reads cut short by size", async () => {
@@ -884,7 +929,7 @@ test("the count is read from the newest message that has one, past S2 reads cut 
 
   const again = socket.channel(name, params, { durable: true })
   await join(again)
-  expect(await ledger(again)).toEqual({ received: 2, sent: 4 })
+  expect(await ledger(again)).toEqual({ received: 2, sent: 8 })
 })
 
 test("push_durable refuses phx_reply, the event of a reply, and the channel rejoins", async () => {

@@ -50,6 +50,7 @@ defmodule TestServer.Traces do
     :register,
     :reader,
     :received,
+    :count,
     :sync,
     :push,
     :append,
@@ -378,6 +379,9 @@ defmodule TestServer.SlowMemory do
   def received(socket), do: Memory.received(socket)
 
   @impl true
+  def count(socket, last, received), do: Memory.count(socket, last, received)
+
+  @impl true
   def reader(socket), do: Memory.reader(socket)
 
   @impl true
@@ -388,6 +392,44 @@ defmodule TestServer.SlowMemory do
     if TestServer.Joins.increment("read:" <> socket.topic) == 1, do: Process.sleep(300)
     Memory.since(socket, number, limit)
   end
+end
+
+defmodule TestServer.Contended do
+  @behaviour PhoenixDurableChannel.Stream
+  @behaviour PhoenixDurableChannel.Stream.ThroughChannel
+  alias PhoenixDurableChannel.Stream.Memory
+
+  @impl true
+  def append(socket, event, payload, received),
+    do: Memory.append(socket, event, payload, received)
+
+  @impl true
+  def received(socket), do: Memory.received(socket)
+
+  @impl true
+  def count(socket, last, received) do
+    if TestServer.Joins.increment("contended:" <> socket.topic) == 1 do
+      number = Memory.append(socket, "update", %{body: "between"}, nil)
+
+      :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+        topic: socket.topic,
+        join_ref: nil,
+        number: number,
+        received: nil
+      })
+    end
+
+    Memory.count(socket, last, received)
+  end
+
+  @impl true
+  def reader(socket), do: Memory.reader(socket)
+
+  @impl true
+  def epoch(socket), do: Memory.epoch(socket)
+
+  @impl true
+  def since(socket, number, limit), do: Memory.since(socket, number, limit)
 end
 
 defmodule TestServer.Unreadable do
@@ -402,6 +444,9 @@ defmodule TestServer.Unreadable do
   def received(socket), do: Memory.received(socket)
 
   @impl true
+  def count(socket, last, received), do: Memory.count(socket, last, received)
+
+  @impl true
   def reader(socket), do: Memory.reader(socket)
 end
 
@@ -414,6 +459,10 @@ defmodule TestServer.Elsewhere do
 
   @impl true
   def received(socket), do: PhoenixDurableChannel.Stream.S2.received(socket)
+
+  @impl true
+  def count(socket, last, received),
+    do: PhoenixDurableChannel.Stream.S2.count(socket, last, received)
 
   @impl true
   def reader(socket),
@@ -434,6 +483,9 @@ defmodule TestServer.ExpiringDurableStreams do
 
   @impl true
   def received(socket), do: DurableStreams.received(socket)
+
+  @impl true
+  def count(socket, last, received), do: DurableStreams.count(socket, last, received)
 
   @impl true
   def reader(socket) do
@@ -502,7 +554,8 @@ defmodule TestServer.DurableChannel do
              "durable-streams-expiring" => TestServer.ExpiringDurableStreams,
              "elsewhere" => TestServer.Elsewhere,
              "slow" => TestServer.SlowMemory,
-             "unreadable" => TestServer.Unreadable
+             "unreadable" => TestServer.Unreadable,
+             "contended" => TestServer.Contended
            })
 
   def durable_stream(socket), do: Map.get(@streams, socket.assigns[:stream], Memory)
@@ -567,6 +620,32 @@ defmodule TestServer.DurableChannel do
   def handle_in("publish_large", _payload, socket) do
     push_durable(socket, "large", %{body: String.duplicate("x", 600_000)})
     {:reply, :ok, socket}
+  end
+
+  def handle_in("fence", _payload, socket),
+    do: {:reply, {:ok, %{fence: socket.assigns.phx_fence}}, socket}
+
+  def handle_in("append_fenced", %{"fence" => fence}, socket) do
+    record = %S2.V1.AppendRecord{
+      body: Jason.encode!(%{event: "update", payload: %{body: "late"}})
+    }
+
+    case S2.append(PhoenixDurableChannel.Stream.S2.config()[:name], socket.topic, [record],
+           fencing_token: fence
+         ) do
+      {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} ->
+        :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+          topic: socket.topic,
+          join_ref: nil,
+          number: number,
+          received: nil
+        })
+
+        {:reply, {:ok, %{appended: number}}, socket}
+
+      {:error, %S2.Error{code: code}} ->
+        {:reply, {:ok, %{refused: code}}, socket}
+    end
   end
 
   def handle_in("trim_nothing", _payload, socket) do

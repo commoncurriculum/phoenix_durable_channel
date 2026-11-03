@@ -33,6 +33,19 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     {:reply, number, state}
   end
 
+  def handle_call({:count, topic, last, received}, _from, state) do
+    kept = kept(topic)
+
+    if kept.latest == last do
+      message = %{number: last + 1, event: "phx_reply", payload: %{received: received}}
+      messages = Enum.take([message | kept.messages], state.kept)
+      put(topic, %{kept | latest: last + 1, messages: messages, received: received})
+      {:reply, last + 1, state}
+    else
+      {:reply, :moved, state}
+    end
+  end
+
   def handle_call({:watch, topic, channel}, _from, state) do
     put(topic, kept(topic))
 
@@ -97,6 +110,10 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     :ok = GenServer.call(__MODULE__, {:watch, socket.topic, self()})
     kept(socket.topic).received
   end
+
+  @impl PhoenixDurableChannel.Stream
+  def count(socket, last, received),
+    do: GenServer.call(__MODULE__, {:count, socket.topic, last, received})
 
   def put(topic, kept),
     do:

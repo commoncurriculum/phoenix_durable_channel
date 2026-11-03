@@ -66,7 +66,7 @@ test("the server names S2 in its join reply, and the channel reads its durable m
     basin,
     stream: topic,
     token: null,
-    last: 1,
+    last: 3,
   })
 
   await waitFor(() => seen.length === 1)
@@ -112,7 +112,13 @@ test("a read that ends is read again, after a backoff, from the last message del
 
   await deleteS2Stream(topic)
   await pause(300)
-  await appendToS2(topic, ["one again", "the deletion's trim again", "two"])
+  await appendToS2(topic, [
+    "the join's fence again",
+    "the join's count again",
+    "one again",
+    "the deletion's trim again",
+    "two",
+  ])
   await waitFor(() => seen.length === 2)
   expect(seen).toEqual(["one", "two"])
   expect(channel.state).toBe("joined")
@@ -249,7 +255,7 @@ test("the server names a Durable Streams store, and a node whose next number ano
   expect(reader).toMatchObject({
     type: "durable-streams",
     url: `${durableStreamsUrl}/v1/stream/phoenix-durable-channel/${encodeURIComponent(topic)}`,
-    last: 0,
+    last: 1,
   })
   expect(reader["token"]).toEqual(expect.any(String))
 
@@ -262,10 +268,10 @@ test("the server names a Durable Streams store, and a node whose next number ano
     headers: {
       authorization: `Bearer ${await durableStreamsToken("write", topic)}`,
       "content-type": "application/json",
-      "stream-seq": "3".padStart(20, "0"),
+      "stream-seq": "4".padStart(20, "0"),
     },
     body: JSON.stringify({
-      number: 3,
+      number: 4,
       event: "update",
       payload: { body: "another node" },
     }),
@@ -273,7 +279,7 @@ test("the server names a Durable Streams store, and a node whose next number ano
   expect(response.ok).toBe(true)
   await fetch(`${phoenixUrl.replace("ws", "http")}/traces/append`, {
     method: "POST",
-    body: JSON.stringify({ topic, number: 3 }),
+    body: JSON.stringify({ topic, number: 4 }),
   })
   await waitFor(() => seen.length === 3)
 
@@ -316,40 +322,41 @@ test("a Durable Streams read after the last one, or after where the join said th
     read.delivered.map((message) => message.number)
 
   const first = collect(stream, 0)
-  await waitFor(() => first.reached.at(-1)?.number === 2)
+  await waitFor(() => first.reached.at(-1)?.number === 3)
   first.stop()
   expect(first.delivered).toEqual([
-    { number: 1, event: "update", payload: { body: "one" } },
-    { number: 2, event: "update", payload: { body: "two" } },
+    { number: 1, event: "phx_reply", payload: { received: 0 } },
+    { number: 2, event: "update", payload: { body: "one" } },
+    { number: 3, event: "update", payload: { body: "two" } },
   ])
 
-  const reachedTwo = first.reached.at(-1)
-  expect(reachedTwo).toEqual({ number: 2, offset: expect.any(String) })
-  const resumed = collect(stream, 2, reachedTwo)
+  const reachedThree = first.reached.at(-1)
+  expect(reachedThree).toEqual({ number: 3, offset: expect.any(String) })
+  const resumed = collect(stream, 3, reachedThree)
   await publish(channel, "three")
   await waitFor(() => resumed.delivered.length === 1)
   resumed.stop()
-  expect(numbers(resumed)).toEqual([3])
+  expect(numbers(resumed)).toEqual([4])
 
-  const fromTheStart = collect(stream, 1, reachedTwo)
-  await waitFor(() => fromTheStart.delivered.length === 3)
+  const fromTheStart = collect(stream, 2, reachedThree)
+  await waitFor(() => fromTheStart.delivered.length === 4)
   fromTheStart.stop()
-  expect(numbers(fromTheStart)).toEqual([1, 2, 3])
+  expect(numbers(fromTheStart)).toEqual([1, 2, 3, 4])
 
   const laterReader = (await answer(channel.push("phx_reader"))).response as PublishedReader
-  expect(laterReader["last"]).toBe(3)
+  expect(laterReader["last"]).toBe(4)
   const fromTheJoin = collect(
     new DurableStream({
       url: String(reader["url"]),
       token,
-      resume: { number: 3, offset: String(laterReader["offset"]) },
+      resume: { number: 4, offset: String(laterReader["offset"]) },
     }),
-    3,
+    4,
   )
   await publish(channel, "four")
   await waitFor(() => fromTheJoin.delivered.length === 1)
   fromTheJoin.stop()
-  expect(numbers(fromTheJoin)).toEqual([4])
+  expect(numbers(fromTheJoin)).toEqual([5])
 })
 
 test("a channel whose Durable Streams read fails reads again from where the store said it had reached", async () => {
@@ -452,7 +459,7 @@ test("with the server's memory as the store, a channel gets what was published w
   const seen = updates(channel)
   expect(await joinedReader(channel)).toEqual({
     type: "phoenix",
-    last: 0,
+    last: 1,
     epoch: expect.any(String),
   })
   await publish(channel, "one")

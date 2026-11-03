@@ -154,7 +154,8 @@
       (case status
         416 payloads
         200 (let [records (:records (json/parse-string body true))
-                  more (into [] (comp (map #(json/parse-string (:body %) true))
+                  more (into [] (comp (remove #(some (fn [[name _]] (= "" name)) (:headers %)))
+                                      (map #(json/parse-string (:body %) true))
                                       (filter #(= "added" (:event %)))
                                       (map #(let [payload (:payload %)] [(:value payload) (:position payload)])))
                              records)]

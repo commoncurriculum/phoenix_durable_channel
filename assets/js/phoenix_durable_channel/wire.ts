@@ -24,6 +24,8 @@ export const decodeDurableReply = Schema.decodeUnknownOption(
   Schema.Struct({ number: Schema.Number, status: Schema.String, response: Schema.Unknown }),
 )
 
+export const isCount = Schema.is(Schema.Struct({ received: Schema.Number }))
+
 export const decodeSyncReply = Schema.decodeUnknownSync(
   Schema.Struct({ received: Schema.Number, reader: Schema.Unknown }),
 )
