@@ -137,6 +137,23 @@ defmodule TestServer.Endpoint do
     connection |> Plug.Conn.send_resp(200, "ok") |> Plug.Conn.halt()
   end
 
+  def traces(%{method: "POST", path_info: ["traces", "append"]} = connection, _options) do
+    {:ok, body, connection} = Plug.Conn.read_body(connection)
+    %{"topic" => topic, "number" => number} = Jason.decode!(body)
+
+    :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+      topic: topic,
+      join_ref: nil,
+      number: number,
+      received: nil
+    })
+
+    connection
+    |> Plug.Conn.put_resp_header("access-control-allow-origin", "*")
+    |> Plug.Conn.send_resp(200, "ok")
+    |> Plug.Conn.halt()
+  end
+
   def traces(connection, _options), do: connection
 
   def s2_append(%{method: "POST", path_info: ["s2", "append"]} = connection, _options) do

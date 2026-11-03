@@ -12,7 +12,7 @@ export function openSocket(path = "/socket", options: SocketOptions = {}): Socke
   const socket = new Socket(`${phoenixUrl}${path}`, {
     logger: (kind, message, data) => {
       if (kind !== "durable") return
-      const [topic = ""] = message.split(" ")
+      const topic = message.slice(0, message.lastIndexOf(" "))
       traces.set(topic, [...(traces.get(topic) ?? []), data])
     },
     ...options,

@@ -271,6 +271,10 @@ test("the server names a Durable Streams store, and a node whose next number ano
     }),
   })
   expect(response.ok).toBe(true)
+  await fetch(`${phoenixUrl.replace("ws", "http")}/traces/append`, {
+    method: "POST",
+    body: JSON.stringify({ topic, number: 3 }),
+  })
   await waitFor(() => seen.length === 3)
 
   await publish(channel, "four")
