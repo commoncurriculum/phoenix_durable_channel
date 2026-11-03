@@ -100,9 +100,19 @@ defmodule PhoenixDurableChannel.Channel do
 
     case join.() do
       {:ok, socket} ->
+        :telemetry.execute([:phoenix_durable_channel, :join], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref
+        })
+
         {:ok, %{phx_durable: true}, Phoenix.Socket.assign(socket, phx_durable: true)}
 
       {:ok, reply, socket} when is_map(reply) ->
+        :telemetry.execute([:phoenix_durable_channel, :join], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref
+        })
+
         {:ok, Map.put(reply, :phx_durable, true),
          Phoenix.Socket.assign(socket, phx_durable: true)}
 
@@ -121,12 +131,23 @@ defmodule PhoenixDurableChannel.Channel do
 
       if replaced != :undefined do
         monitor = Process.monitor(replaced)
+
+        :telemetry.execute([:phoenix_durable_channel, :replace], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref
+        })
+
         send(replaced, :phx_replaced)
 
         receive do
           {:DOWN, ^monitor, :process, _process, _reason} -> :ok
         after
           @replace_timeout ->
+            :telemetry.execute([:phoenix_durable_channel, :kill], %{}, %{
+              topic: socket.topic,
+              join_ref: socket.join_ref
+            })
+
             Process.exit(replaced, :kill)
 
             receive do
@@ -138,9 +159,30 @@ defmodule PhoenixDurableChannel.Channel do
       :yes = :global.re_register_name(name, self())
     end)
 
+    :telemetry.execute([:phoenix_durable_channel, :register], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref
+    })
+
     stream = stream_for.(socket)
-    Phoenix.Channel.push(socket, "phx_reader", stream.reader(socket))
-    {:noreply, Phoenix.Socket.assign(socket, :phx_received, stream.received(socket))}
+    reader = stream.reader(socket)
+
+    :telemetry.execute([:phoenix_durable_channel, :reader], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      last: reader.last
+    })
+
+    Phoenix.Channel.push(socket, "phx_reader", reader)
+    received = stream.received(socket)
+
+    :telemetry.execute([:phoenix_durable_channel, :received], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      received: received
+    })
+
+    {:noreply, Phoenix.Socket.assign(socket, :phx_received, received)}
   end
 
   def unexpected_message(message, socket) do
@@ -156,6 +198,11 @@ defmodule PhoenixDurableChannel.Channel do
   end
 
   def replaced(socket) do
+    :telemetry.execute([:phoenix_durable_channel, :replaced], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref
+    })
+
     Phoenix.Channel.push(socket, "phx_error", %{})
     {:stop, {:shutdown, :replaced}, socket}
   end
@@ -168,6 +215,13 @@ defmodule PhoenixDurableChannel.Channel do
 
   defp push_durable(stream, socket, event, payload, received) do
     number = stream.append(socket, event, payload, received)
+
+    :telemetry.execute([:phoenix_durable_channel, :append], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      number: number,
+      received: received
+    })
 
     cond do
       socket.assigns[:phx_durable] != true ->
@@ -186,10 +240,18 @@ defmodule PhoenixDurableChannel.Channel do
   def through_channel?(stream),
     do: Code.ensure_loaded?(stream) and function_exported?(stream, :since, 3)
 
-  def sync(stream, socket),
-    do:
-      {:reply, {:ok, %{received: socket.assigns.phx_received, reader: stream.reader(socket)}},
-       socket}
+  def sync(stream, socket) do
+    reader = stream.reader(socket)
+
+    :telemetry.execute([:phoenix_durable_channel, :sync], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      received: socket.assigns.phx_received,
+      last: reader.last
+    })
+
+    {:reply, {:ok, %{received: socket.assigns.phx_received, reader: reader}}, socket}
+  end
 
   def read(stream, last, socket) do
     if through_channel?(stream),
@@ -214,9 +276,25 @@ defmodule PhoenixDurableChannel.Channel do
 
     cond do
       number <= received ->
+        :telemetry.execute([:phoenix_durable_channel, :push], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref,
+          number: number,
+          received: received,
+          outcome: :old
+        })
+
         {:noreply, socket}
 
       number > received + 1 ->
+        :telemetry.execute([:phoenix_durable_channel, :push], %{}, %{
+          topic: socket.topic,
+          join_ref: socket.join_ref,
+          number: number,
+          received: received,
+          outcome: :ahead
+        })
+
         {:reply, {:error, %{phx_not_taken: "out_of_order"}}, socket}
 
       true ->
@@ -231,6 +309,14 @@ defmodule PhoenixDurableChannel.Channel do
 
         case result do
           {:retry, reason, socket} ->
+            :telemetry.execute([:phoenix_durable_channel, :push], %{}, %{
+              topic: socket.topic,
+              join_ref: socket.join_ref,
+              number: number,
+              received: received,
+              outcome: :retry
+            })
+
             {:reply, {:error, %{phx_not_taken: reason}}, socket}
 
           {:noreply, socket} ->
@@ -258,6 +344,14 @@ defmodule PhoenixDurableChannel.Channel do
   end
 
   def answer(stream, number, {status, response}, socket) do
+    :telemetry.execute([:phoenix_durable_channel, :push], %{}, %{
+      topic: socket.topic,
+      join_ref: socket.join_ref,
+      number: number,
+      received: socket.assigns.phx_received,
+      outcome: status
+    })
+
     :ok =
       push_durable(
         stream,

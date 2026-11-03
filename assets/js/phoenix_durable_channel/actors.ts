@@ -5,6 +5,7 @@ import {
   fromPromise,
   type Actor,
   type AnyActorLogic,
+  type AnyEventObject,
   type EmittedFrom,
   type InputFrom,
   type SnapshotFrom,
@@ -35,8 +36,15 @@ export function startMachine<Logic extends AnyActorLogic>(
   input: InputFrom<Logic>,
   observe: (snapshot: SnapshotFrom<Logic>) => void,
   handle: (event: EmittedFrom<Logic>) => void,
+  took: (event: AnyEventObject) => void = ignore,
 ): Actor<Logic> {
-  const actor = createActor(logic, { input })
+  const actor = createActor(logic, {
+    input,
+    inspect: (inspection) => {
+      if (inspection.type === "@xstate.event" && inspection.actorRef.sessionId === inspection.rootId)
+        took(inspection.event)
+    },
+  })
   actor.subscribe(observe)
   actor.on("*", (event) => {
     observe(actor.getSnapshot())

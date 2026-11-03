@@ -89,6 +89,7 @@ export class Durable implements ChannelExtension {
           }
         }
       },
+      (event) => socket.log("durable", `${channel.topic} ${event.type}`, event),
     )
     this.reader = startMachine(
       readerMachine.provide({

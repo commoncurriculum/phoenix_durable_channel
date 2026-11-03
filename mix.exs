@@ -13,6 +13,7 @@ defmodule PhoenixDurableChannel.MixProject do
     [
       {:phoenix, "~> 1.7.21 or ~> 1.8"},
       {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"},
       {:req, "~> 0.5", optional: true},
       {:mongodb_driver, "~> 1.5", optional: true},
       {:s2_client,
