@@ -18,7 +18,7 @@ defmodule PhoenixDurableChannel.MixProject do
       {:mongodb_driver, "~> 1.5", optional: true},
       {:s2_client,
        git: "https://github.com/commoncurriculum/s2-elixir-client.git",
-       ref: "b7f494de34c5297aa77ee97c31c61d120e6ce794",
+       ref: "c3d82cc75391e10845acae72c0da2842d6e6263e",
        optional: true},
       {:plug_cowboy, "~> 2.7", only: :test},
       {:cowlib, "~> 2.15.0", only: :test},

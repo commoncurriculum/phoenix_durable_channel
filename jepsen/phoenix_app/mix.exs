@@ -22,7 +22,7 @@ defmodule JepsenServer.MixProject do
       {:phoenix_durable_channel, path: "../.."},
       {:s2_client,
        git: "https://github.com/commoncurriculum/s2-elixir-client.git",
-       ref: "b7f494de34c5297aa77ee97c31c61d120e6ce794"}
+       ref: "c3d82cc75391e10845acae72c0da2842d6e6263e"}
     ]
   end
 end
