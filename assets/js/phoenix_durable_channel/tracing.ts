@@ -66,7 +66,7 @@ export function createTracing(options: TracingOptions | undefined): Tracing {
         {
           kind: SpanKind.CONSUMER,
           attributes: {
-            "messaging.system": "phoenix",
+            "messaging.system.name": "phoenix",
             "messaging.operation.name": "process",
             "messaging.operation.type": "process",
             "messaging.destination.name": topic,
