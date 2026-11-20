@@ -18,9 +18,14 @@ tlc() {
 }
 
 failures=0
+only=("$@")
+for module in "${only[@]}"; do
+  [ -f "$here/$module.cfg" ] || { echo "no model named $module"; exit 1; }
+done
 
 check() {
   local module="$1" constants="$2" liveness="${3:-$2}"
+  if [ ${#only[@]} -gt 0 ] && [[ " ${only[*]} " != *" $module "* ]]; then return; fi
   echo "$module, the code as it is: every rule holds"
   cp "$here/$module.cfg" "$work/$module-as-is.cfg"
   if ! out="$(tlc "$module" "$module-as-is.cfg")" || ! grep -q "No error has been found" <<<"$out"; then

@@ -67,6 +67,17 @@ jobs:
   model-check:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - PhoenixDurableChannel
+          - DurableMessages
+          - ChannelRead
+          - SocketBuffer
+          - StreamReader
+          - DurableStreamsNumbering
+    name: model-check (${{ matrix.model }})
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +87,7 @@ jobs:
           java-version: "21"
 
       - name: Model-check with TLA+
-        run: verification/check.sh
+        run: verification/check.sh ${{ matrix.model }}
 
   every-commit:
     runs-on: ubuntu-latest
