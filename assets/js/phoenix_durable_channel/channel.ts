@@ -9,10 +9,12 @@ import { Push } from "./push"
 import { Reply } from "./reply"
 import type { Message } from "./serializer"
 import type { Params } from "./url"
+import type { Tracing } from "./tracing"
 import { decodeReply } from "./wire"
 
 export interface ChannelSocket {
   timeout: number
+  readonly tracing: Tracing
   readonly establishedConnections: number
   isConnected(): boolean
   makeRef(): string
@@ -87,7 +89,20 @@ export class Channel {
     this.params = typeof params === "function" ? params : () => params
     const trigger: Trigger = (event, payload, ref, joinRef) =>
       this.trigger(event, payload, ref, joinRef)
-    this.extension = options.durable ? new Durable(this, options, trigger) : plain(topic, trigger)
+    this.extension = options.durable
+      ? new Durable(
+          {
+            topic,
+            socket,
+            joinRef: () => this.joinRef(),
+            push: (event, payload = {}, timeout = this.timeout) =>
+              this.enqueue(event, payload, timeout),
+            trigger,
+            emit: (event, payload) => this.emit(event, payload),
+          },
+          options,
+        )
+      : plain(topic, trigger)
     this.status = createReactive<{ state: ChannelState }>({ state: "closed" })
     this.actor = startMachine(
       channelMachine.provide({
@@ -175,13 +190,9 @@ export class Channel {
         `tried to push '${event}' to '${this.topic}' before joining. Use channel.join() before pushing events`,
       )
     }
-    if (typeof timeoutOrOptions === "object") return this.extension.push(event, payload)
-    const push = new Push(event, payload, timeoutOrOptions, (finished) =>
-      this.pushes.delete(finished),
-    )
-    this.pushes.add(push)
-    if (this.canPush()) this.send(push)
-    return push
+    const carried = this.socket.tracing.inject(payload)
+    if (typeof timeoutOrOptions === "object") return this.extension.push(event, carried)
+    return this.enqueue(event, carried, timeoutOrOptions)
   }
 
   on(event: string, callback: Binding["callback"]): number {
@@ -270,7 +281,25 @@ export class Channel {
     this.extension.reply(ref, status, response)
   }
 
+  private enqueue(event: string, payload: unknown, timeout: number): Push {
+    const push = new Push(event, payload, timeout, (finished) => this.pushes.delete(finished))
+    this.pushes.add(push)
+    if (this.canPush()) this.send(push)
+    return push
+  }
+
   private trigger(
+    event: string,
+    payload: unknown,
+    ref: string | null = null,
+    joinRef: string | null = null,
+  ): void {
+    this.socket.tracing.process(this.topic, event, payload, () =>
+      this.emit(event, payload, ref, joinRef),
+    )
+  }
+
+  private emit(
     event: string,
     payload: unknown,
     ref: string | null = null,
@@ -330,12 +359,12 @@ export class Channel {
           if (push.status.state === "sent") push.actor.send({ type: "CONNECTION_LOST" })
         return
       case "errored":
-        return this.trigger(CHANNEL_EVENTS.error, event.reason)
+        return this.emit(CHANNEL_EVENTS.error, event.reason)
       case "closed":
         for (const push of this.pushes) push.actor.send({ type: "CHANNEL_CLOSED" })
         this.extension.closed()
         this.socket.remove(this)
-        return this.trigger(CHANNEL_EVENTS.close, event.reason)
+        return this.emit(CHANNEL_EVENTS.close, event.reason)
     }
   }
 }
