@@ -64,6 +64,12 @@ jobs:
         if: failure()
         run: tail -n 300 integration_test/durable_streams/wrangler.log
 
+  model-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
