@@ -1,4 +1,4 @@
-import { context, propagation, trace } from "@opentelemetry/api"
+import { context, propagation, SpanKind, trace } from "@opentelemetry/api"
 import { W3CTraceContextPropagator } from "@opentelemetry/core"
 import { StackContextManager, TracerProvider, type ReadableSpan } from "@opentelemetry/sdk-trace"
 import { expect, test } from "vitest"
@@ -166,6 +166,26 @@ test("a span is named after the topic's pattern, room:* for room:lobby by defaul
   const customNames = activeSpanNames(custom, "broadcasted")
   await broadcast(custom, {})
   expect(customNames).toEqual(["process tracing"])
+})
+
+test("a span is a consumer span with the messaging attributes semantic conventions name", async () => {
+  const channel = await joined()
+  const spans: Array<ReadableSpan | undefined> = []
+  channel.on("broadcasted", () => spans.push(trace.getActiveSpan() as ReadableSpan | undefined))
+  await broadcast(channel, {})
+  expect(spans.map((span) => [span?.kind, span?.attributes])).toEqual([
+    [
+      SpanKind.CONSUMER,
+      {
+        "messaging.system.name": "phoenix",
+        "messaging.operation.name": "process",
+        "messaging.operation.type": "process",
+        "messaging.destination.name": channel.topic,
+        "messaging.destination.template": "room:*",
+        "phoenix.channel.event": "broadcasted",
+      },
+    ],
+  ])
 })
 
 test("the channel's own phx_error and phx_close run outside any span", async () => {
