@@ -237,9 +237,31 @@ The calls and their arguments are the same. The behavior differs where phoenix.j
 - Presence keys such as `"toString"` or `"__proto__"` are ordinary keys.
 - `heartbeatTimeoutMs` (default 10 s) is separate from the heartbeat interval.
 
-New socket options: `heartbeatTimeoutMs`, `websocketRetryAfterMs`, `offlineAfterMs`, `activity` (an `ActivityTracker` from `@supergrain/activity`) and `disconnectAfterInactiveMs`. `socket.status` and `channel.status` are reactive supergrain objects (`connectionState`, `transport`, `online`; `state`).
+New socket options: `heartbeatTimeoutMs`, `websocketRetryAfterMs`, `offlineAfterMs`, `activity` (an `ActivityTracker` from `@supergrain/activity`), `disconnectAfterInactiveMs`, and `tracing` ([Tracing](#tracing)). `socket.status` and `channel.status` are reactive supergrain objects (`connectionState`, `transport`, `online`; `state`).
 
 New channel options, the third argument of `socket.channel`: `durable`, `after` (the number of the last server message the app already has, a whole number of 0 or more, or `socket.channel` throws; without it the channel receives what is appended after its first join) and `readers` (below).
+
+## Tracing
+
+The client is instrumented with OpenTelemetry's API, `@opentelemetry/api` as a peer dependency, so it does nothing until the app registers an OpenTelemetry SDK. A socket traces its channels when given the `tracing` option. Phoenix messages have no headers, so its `carrier` names the payload key that carries the W3C trace context:
+
+```ts
+const socket = new Socket("/socket", {
+  tracing: {
+    carrier: "meta",
+    shouldTraceMessage: ({ parent }) => parent !== undefined,
+    topicPattern: (topic) => topic.replace(/:.*/, ":*"),
+  },
+})
+```
+
+- A push, durable or not, made while a span is active gets that span's context under `meta`, unless its payload already has a `meta` or isn't a plain object. A durable push sent again carries the context it was first made in.
+- Each incoming message's handlers run in a `process <topic pattern>` consumer span, named and attributed by OpenTelemetry's messaging conventions, whose parent is the context in the message's `meta`.
+- `shouldTraceMessage({ topic, event, payload, parent })` decides whether an incoming message gets that span; `parent` is the span context in its `meta`, if any. Without it, every message does. The one above traces only messages the server sent as part of a trace; `({ event }) => !event.startsWith("presence_")` would leave out presence.
+- `topicPattern(topic)` gives the span's name and `messaging.destination.template`, the general form of the topic that many topics share, like the topic pattern a Phoenix socket routes with `channel "room:*", RoomChannel`. Without it, everything after the first `:` becomes `*`, so `room:lobby` gives `process room:*`.
+- The library's own pushes (`phx_join`, `phx_sync`, `phx_read`, …) carry no context, and the events the client raises itself (`phx_error`, `phx_close`, `phx_skipped`) run outside any span and never reach `shouldTraceMessage`.
+
+On the server, a wrapper that reads the context from `handle_in/3`'s payload, such as a channel instrumentation, goes before `use PhoenixDurableChannel.Channel`. The `use` that comes last wraps the others, so the durable channel then hands the wrapper a durable message's plain payload.
 
 ## How durable messages work
 

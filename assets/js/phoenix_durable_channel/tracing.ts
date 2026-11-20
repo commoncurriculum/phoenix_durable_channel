@@ -1,0 +1,88 @@
+import {
+  context,
+  propagation,
+  ROOT_CONTEXT,
+  SpanKind,
+  trace,
+  type SpanContext,
+} from "@opentelemetry/api"
+
+export interface TracedMessage {
+  readonly topic: string
+  readonly event: string
+  readonly payload: unknown
+  readonly parent: SpanContext | undefined
+}
+
+export interface TracingOptions {
+  carrier: string
+  shouldTraceMessage?: (message: TracedMessage) => boolean
+  topicPattern?: (topic: string) => string
+}
+
+export interface Tracing {
+  inject(payload: unknown): unknown
+  process(topic: string, event: string, payload: unknown, handle: () => void): void
+}
+
+const untraced: Tracing = {
+  inject: (payload) => payload,
+  process: (_topic, _event, _payload, handle) => handle(),
+}
+
+const isPlainObject = (payload: unknown): payload is Record<string, unknown> =>
+  typeof payload === "object" &&
+  payload !== null &&
+  Object.getPrototypeOf(payload) === Object.prototype
+
+const everyMessage = (): boolean => true
+
+const wildcardTopicPattern = (topic: string): string => topic.replace(/:.*/, ":*")
+
+export function createTracing(options: TracingOptions | undefined): Tracing {
+  if (options === undefined) return untraced
+  const {
+    carrier,
+    shouldTraceMessage = everyMessage,
+    topicPattern = wildcardTopicPattern,
+  } = options
+  const tracer = trace.getTracer("phoenix_durable_channel")
+  return {
+    inject(payload) {
+      if (!isPlainObject(payload) || payload[carrier] !== undefined) return payload
+      const injected: Record<string, string> = {}
+      propagation.inject(context.active(), injected)
+      return Object.keys(injected).length === 0 ? payload : { ...payload, [carrier]: injected }
+    },
+    process(topic, event, payload, handle) {
+      const carried =
+        isPlainObject(payload) && isPlainObject(payload[carrier]) ? payload[carrier] : {}
+      const parent = propagation.extract(ROOT_CONTEXT, carried)
+      if (!shouldTraceMessage({ topic, event, payload, parent: trace.getSpanContext(parent) }))
+        return handle()
+      const pattern = topicPattern(topic)
+      tracer.startActiveSpan(
+        `process ${pattern}`,
+        {
+          kind: SpanKind.CONSUMER,
+          attributes: {
+            "messaging.system": "phoenix",
+            "messaging.operation.name": "process",
+            "messaging.operation.type": "process",
+            "messaging.destination.name": topic,
+            "messaging.destination.template": pattern,
+            "phoenix.channel.event": event,
+          },
+        },
+        parent,
+        (span) => {
+          try {
+            handle()
+          } finally {
+            span.end()
+          }
+        },
+      )
+    },
+  }
+}
