@@ -64,20 +64,26 @@ jobs:
         if: failure()
         run: tail -n 300 integration_test/durable_streams/wrangler.log
 
+  model-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.list.outputs.checks }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: list
+        run: echo "checks=$(verification/check.sh --list | jq -Rnc '[inputs]')" >> "$GITHUB_OUTPUT"
+
   model-check:
+    needs: model-checks
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        model:
-          - PhoenixDurableChannel
-          - DurableMessages
-          - ChannelRead
-          - SocketBuffer
-          - StreamReader
-          - DurableStreamsNumbering
-    name: model-check (${{ matrix.model }})
+        check: ${{ fromJSON(needs.model-checks.outputs.checks) }}
+    name: model-check (${{ matrix.check }})
     steps:
       - uses: actions/checkout@v4
 
@@ -87,7 +93,7 @@ jobs:
           java-version: "21"
 
       - name: Model-check with TLA+
-        run: verification/check.sh ${{ matrix.model }}
+        run: verification/check.sh ${{ matrix.check }}
 
   every-commit:
     runs-on: ubuntu-latest
