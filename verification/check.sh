@@ -2,25 +2,48 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-jar="${TLA2TOOLS:-$HOME/.cache/tla2tools-1.7.4.jar}"
-if [ ! -f "$jar" ]; then
-  mkdir -p "$(dirname "$jar")"
-  curl -sSL -o "$jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
-  echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $jar" | sha256sum -c --quiet
-fi
 
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-cp "$here"/*.tla "$work/"
+listing=false
+only=()
+for arg in "$@"; do
+  if [ "$arg" = --list ]; then
+    listing=true
+  else
+    [ -f "$here/${arg%%/*}.cfg" ] || { echo "no model named ${arg%%/*}"; exit 1; }
+    only+=("$arg")
+  fi
+done
+
+if ! $listing; then
+  jar="${TLA2TOOLS:-$HOME/.cache/tla2tools-1.7.4.jar}"
+  if [ ! -f "$jar" ]; then
+    mkdir -p "$(dirname "$jar")"
+    curl -sSL -o "$jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+    echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $jar" | sha256sum -c --quiet
+  fi
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  cp "$here"/*.tla "$work/"
+fi
 
 tlc() {
   (cd "$work" && java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -cleanup "$1.tla" -config "$2" 2>&1)
 }
 
 failures=0
+ran=0
 
-check() {
-  local module="$1" constants="$2" liveness="${3:-$2}"
+selected() {
+  [ ${#only[@]} -eq 0 ] && return 0
+  local want
+  for want in "${only[@]}"; do
+    if [ "$want" = "$1" ] || [ "$want" = "$1/$2" ]; then return 0; fi
+  done
+  return 1
+}
+
+as_is() {
+  local module="$1"
   echo "$module, the code as it is: every rule holds"
   cp "$here/$module.cfg" "$work/$module-as-is.cfg"
   if ! out="$(tlc "$module" "$module-as-is.cfg")" || ! grep -q "No error has been found" <<<"$out"; then
@@ -39,7 +62,23 @@ check() {
     fi
     grep "distinct states found" <<<"$out"
   fi
+}
+
+check() {
+  local module="$1" constants="$2" liveness="${3:-$2}" mutants
+  mutants="$(cat)"
+  if $listing; then
+    echo "$module/as-is"
+    while read -r broken rule kind; do echo "$module/$broken-$rule"; done <<<"$mutants"
+    return
+  fi
+  if selected "$module" as-is; then
+    ran=$((ran + 1))
+    as_is "$module"
+  fi
   while read -r broken rule kind; do
+    selected "$module" "$broken-$rule" || continue
+    ran=$((ran + 1))
     printf 'SPECIFICATION Spec\nCONSTANTS\n%s\n  Broken = "%s"\nCHECK_DEADLOCK FALSE\n%s %s\n' \
       "$([ "$kind" = PROPERTY ] && echo "$liveness" || echo "$constants")" "$broken" "$kind" "$rule" \
       >"$work/$module-$broken-$rule.cfg"
@@ -50,7 +89,7 @@ check() {
       echo "  DID NOT BREAK: $rule, when $broken"
       failures=$((failures + 1))
     fi
-  done
+  done <<<"$mutants"
 }
 
 check PhoenixDurableChannel "  MaxFaults = 3
@@ -145,6 +184,11 @@ noStreamSeq NumberedInOrder INVARIANT
 givenBeforePost NumberedInOrder INVARIANT
 EOF
 
+if $listing; then exit 0; fi
+if [ "$ran" -eq 0 ]; then
+  echo "no check named ${only[*]}"
+  exit 1
+fi
 if [ "$failures" -gt 0 ]; then
   echo "FAILED: $failures rule(s) no longer break on the change they guard against."
   exit 1

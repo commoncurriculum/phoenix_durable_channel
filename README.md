@@ -371,7 +371,7 @@ A push may be in the stream twice in a row, when its channel process died betwee
 verification/check.sh
 ```
 
-TLA+ models of the socket, channel and push lifecycle, the client's durable pushes, reading the server's durable messages through the channel and from a store, the socket's push buffer, and numbering on Durable Streams. The XState machines are in `assets/js/phoenix_durable_channel/machines/`, one per file. ## Faults
+TLA+ models of the socket, channel and push lifecycle, the client's durable pushes, reading the server's durable messages through the channel and from a store, the socket's push buffer, and numbering on Durable Streams. `verification/check.sh DurableMessages ChannelRead` checks only the models named, `verification/check.sh DurableMessages/as-is DurableMessages/noResend-CatchesUp` only the checks named, and `verification/check.sh --list` lists every check; CI runs each check in its own job. The XState machines are in `assets/js/phoenix_durable_channel/machines/`, one per file. ## Faults
 
 ```sh
 pnpm faults
