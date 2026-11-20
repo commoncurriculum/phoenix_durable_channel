@@ -31,6 +31,8 @@ export interface DurableChannel {
   readonly socket: ChannelSocket
   joinRef(): string | null
   push(event: string, payload?: unknown, timeout?: number): Push
+  trigger: Trigger
+  emit(event: string, payload: unknown): void
 }
 
 export interface DurableOptions {
@@ -47,7 +49,6 @@ export class Durable implements ChannelExtension {
   constructor(
     private readonly channel: DurableChannel,
     options: DurableOptions,
-    private readonly trigger: Trigger,
   ) {
     const { socket } = channel
     const { after } = options
@@ -112,7 +113,7 @@ export class Durable implements ChannelExtension {
         switch (event.type) {
           case "deliver": {
             if (event.message.event !== CHANNEL_EVENTS.reply)
-              return trigger(event.message.event, event.message.payload)
+              return channel.trigger(event.message.event, event.message.payload)
             const answered = decodeDurableReply(event.message.payload)
             if (Option.isSome(answered))
               return this.log.actor.send({ type: "ANSWERED", ...answered.value })
@@ -131,7 +132,7 @@ export class Durable implements ChannelExtension {
               `${channel.topic} skipped durable messages ${event.after + 1} to ${event.next - 1}, which the store no longer has`,
             )
             this.log.actor.send({ type: "SKIPPED" })
-            return trigger(CHANNEL_EVENTS.skipped, { after: event.after, next: event.next })
+            return channel.emit(CHANNEL_EVENTS.skipped, { after: event.after, next: event.next })
           case "read":
             return channel
               .push(CHANNEL_EVENTS.read, { after: event.after }, Infinity)
@@ -192,7 +193,7 @@ export class Durable implements ChannelExtension {
     const { event, payload, ref, join_ref, number, epoch } = message
     if (event === CHANNEL_EVENTS.reader)
       return this.reader.send({ type: "PUBLISHED", reader: decodePublishedReader(payload) })
-    if (number === undefined) return this.trigger(event, payload, ref, join_ref)
+    if (number === undefined) return this.channel.trigger(event, payload, ref, join_ref)
     this.reader.send({ type: "MESSAGE", message: { number, event, payload }, epoch })
   }
 
