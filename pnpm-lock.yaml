@@ -38,10 +38,19 @@ importers:
         version: 4.20260702.1
       '@durable-streams-cloudflare/server':
         specifier: git+https://github.com/commoncurriculum/durable-streams-cloudflare.git#9e9481380662491c16ec4656d093ed0559f49fd1&path:packages/server
-        version: https://codeload.github.com/commoncurriculum/durable-streams-cloudflare/tar.gz/9e9481380662491c16ec4656d093ed0559f49fd1#path:packages/server(patch_hash=0820cea5ed7e6b7a616087b50c6c829d1d0a86ecc636312571d9d83985e89aa1)(@cloudflare/workers-types@4.20260702.1)(@standard-schema/spec@1.1.0)(effect@3.22.4)
+        version: https://codeload.github.com/commoncurriculum/durable-streams-cloudflare/tar.gz/9e9481380662491c16ec4656d093ed0559f49fd1#path:packages/server(patch_hash=0820cea5ed7e6b7a616087b50c6c829d1d0a86ecc636312571d9d83985e89aa1)(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@standard-schema/spec@1.1.0)(effect@3.22.4)
       '@jest/globals':
         specifier: ^30.5.2
         version: 30.5.2
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
+      '@opentelemetry/core':
+        specifier: ^2.12.1
+        version: 2.12.1(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-trace':
+        specifier: ^2.12.1
+        version: 2.12.1(@opentelemetry/api@1.9.1)
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5
@@ -77,7 +86,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: 4.1.9
-        version: 4.1.9(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
+        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
       wrangler:
         specifier: ^4.156.0
         version: 4.156.0(@cloudflare/workers-types@4.20260702.1)(@types/node@22.20.5)
@@ -1324,6 +1333,32 @@ packages:
   '@loglayer/transport@2.3.13':
     resolution: {integrity: sha512-sfw6xvsIOzTh4l8ZpSH7Vfj3ajH/y+PUBShclqjaLtXxurKGh8xZuciDsL3wuern+Ea/r8+iT2vzK3d2BSUyQQ==}
     engines: {node: '>=18'}
+
+  '@opentelemetry/api@1.9.1':
+    resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
+    engines: {node: '>=8.0.0'}
+
+  '@opentelemetry/core@2.12.1':
+    resolution: {integrity: sha512-3hr6Pj0/G0oVgIGb97IVcw9BjZ6eudonKjrmQxw7JquyU/XmVbJelkmyoU0sT/OvHGkv+r1tcrwv8MbSX7aKHw==}
+    engines: {node: ^18.19.0 || >=20.6.0}
+    peerDependencies:
+      '@opentelemetry/api': '>=1.0.0 <1.10.0'
+
+  '@opentelemetry/resources@2.12.1':
+    resolution: {integrity: sha512-IwrNcuLCvnJAnNLkXxx0Uw+rjBkVW6VGQrhd7PanNf0LavOzkTk9sDAjdqegM7p/VdxefNRrii6d+wBRJfz35g==}
+    engines: {node: ^18.19.0 || >=20.6.0}
+    peerDependencies:
+      '@opentelemetry/api': '>=1.3.0 <1.10.0'
+
+  '@opentelemetry/sdk-trace@2.12.1':
+    resolution: {integrity: sha512-vANdmCYnn+Ka/alBKxwICMl4Koa+aQBlRC9zAZy+Ig1Obbo3RZt2oiyv+8/gET5rrBBYrO3YniPcXfwZrN01rg==}
+    engines: {node: ^18.19.0 || >=20.6.0}
+    peerDependencies:
+      '@opentelemetry/api': '>=1.3.0 <1.10.0'
+
+  '@opentelemetry/semantic-conventions@1.45.0':
+    resolution: {integrity: sha512-aOP45mbcOKbQVvFWfQmgoOPT8R2iwbbbgl83k4CujGV9BrJhFr3qG55MFpwFs4YLabpuW3HhzUY9eQxPlDqaZw==}
+    engines: {node: '>=14'}
 
   '@oxc-project/types@0.156.0':
     resolution: {integrity: sha512-1Duyg48TdJNdyhEB8Xn1L36bT9Pv6GUtlKjHxOys8xkaF/rQq3XJE+bAurSK/AgIz5mGFsb77cn9Pb20+WCScw==}
@@ -3116,6 +3151,7 @@ packages:
 
   tldts-core@7.4.20:
     resolution: {integrity: sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==}
+    deprecated: Partial release, see https://github.com/remusao/tldts/issues/2735. Use >=7.4.22.
 
   tldts@6.1.86:
     resolution: {integrity: sha512-WMi/OQ2axVTf/ykqCQgXiIct+mSQDFdH2fkwhPwgEwvJ1kSzZRiinb0zF2Xb8u4+OqPChmyI6MEu4EezNJz+FQ==}
@@ -4297,14 +4333,14 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.2': {}
 
-  '@durable-streams-cloudflare/server@https://codeload.github.com/commoncurriculum/durable-streams-cloudflare/tar.gz/9e9481380662491c16ec4656d093ed0559f49fd1#path:packages/server(patch_hash=0820cea5ed7e6b7a616087b50c6c829d1d0a86ecc636312571d9d83985e89aa1)(@cloudflare/workers-types@4.20260702.1)(@standard-schema/spec@1.1.0)(effect@3.22.4)':
+  '@durable-streams-cloudflare/server@https://codeload.github.com/commoncurriculum/durable-streams-cloudflare/tar.gz/9e9481380662491c16ec4656d093ed0559f49fd1#path:packages/server(patch_hash=0820cea5ed7e6b7a616087b50c6c829d1d0a86ecc636312571d9d83985e89aa1)(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@standard-schema/spec@1.1.0)(effect@3.22.4)':
     dependencies:
       '@cloudflare/workers-types': 4.20260702.1
       '@hono/standard-validator': 0.2.3(@standard-schema/spec@1.1.0)(hono@4.13.14)
       arkregex: 0.0.5
       arktype: 2.2.9
-      drizzle-arktype: 0.1.3(arktype@2.2.9)(drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1))
-      drizzle-orm: 0.45.4(@cloudflare/workers-types@4.20260702.1)
+      drizzle-arktype: 0.1.3(arktype@2.2.9)(drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1))
+      drizzle-orm: 0.45.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)
       hono: 4.13.14
       hono-openapi: 1.5.0(arktype@2.2.9)(effect@3.22.4)(hono@4.13.14)
       loglayer: 8.5.0
@@ -4800,6 +4836,28 @@ snapshots:
     dependencies:
       '@loglayer/shared': 3.3.0
 
+  '@opentelemetry/api@1.9.1': {}
+
+  '@opentelemetry/core@2.12.1(@opentelemetry/api@1.9.1)':
+    dependencies:
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/semantic-conventions': 1.45.0
+
+  '@opentelemetry/resources@2.12.1(@opentelemetry/api@1.9.1)':
+    dependencies:
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/core': 2.12.1(@opentelemetry/api@1.9.1)
+      '@opentelemetry/semantic-conventions': 1.45.0
+
+  '@opentelemetry/sdk-trace@2.12.1(@opentelemetry/api@1.9.1)':
+    dependencies:
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/core': 2.12.1(@opentelemetry/api@1.9.1)
+      '@opentelemetry/resources': 2.12.1(@opentelemetry/api@1.9.1)
+      '@opentelemetry/semantic-conventions': 1.45.0
+
+  '@opentelemetry/semantic-conventions@1.45.0': {}
+
   '@oxc-project/types@0.156.0': {}
 
   '@parcel/watcher-android-arm64@2.6.0':
@@ -5105,7 +5163,7 @@ snapshots:
       '@vitest/mocker': 4.1.9(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
       playwright: 1.63.0
       tinyrainbow: 3.2.0
-      vitest: 4.1.9(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
+      vitest: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -5121,7 +5179,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.2.0
-      vitest: 4.1.9(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
+      vitest: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
       ws: 8.22.1
     transitivePeerDependencies:
       - bufferutil
@@ -5141,7 +5199,7 @@ snapshots:
       obug: 2.2.1
       std-env: 4.3.0
       tinyrainbow: 3.2.0
-      vitest: 4.1.9(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
+      vitest: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
     optionalDependencies:
       '@vitest/browser': 4.1.9(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))(vitest@4.1.9)
 
@@ -5432,14 +5490,15 @@ snapshots:
 
   detect-newline@3.1.0: {}
 
-  drizzle-arktype@0.1.3(arktype@2.2.9)(drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1)):
+  drizzle-arktype@0.1.3(arktype@2.2.9)(drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)):
     dependencies:
       arktype: 2.2.9
-      drizzle-orm: 0.45.4(@cloudflare/workers-types@4.20260702.1)
+      drizzle-orm: 0.45.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)
 
-  drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1):
+  drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1):
     optionalDependencies:
       '@cloudflare/workers-types': 4.20260702.1
+      '@opentelemetry/api': 1.9.1
 
   eastasianwidth@0.2.0: {}
 
@@ -6665,7 +6724,7 @@ snapshots:
       esbuild: 0.28.2
       fsevents: 2.3.3
 
-  vitest@4.1.9(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)):
+  vitest@4.1.9(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/browser-playwright@4.1.9)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)):
     dependencies:
       '@vitest/expect': 4.1.9
       '@vitest/mocker': 4.1.9(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))
@@ -6688,6 +6747,7 @@ snapshots:
       vite: 8.3.5(@types/node@22.20.5)(esbuild@0.28.2)
       why-is-node-running: 2.3.0
     optionalDependencies:
+      '@opentelemetry/api': 1.9.1
       '@types/node': 22.20.5
       '@vitest/browser-playwright': 4.1.9(playwright@1.63.0)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2))(vitest@4.1.9)
       '@vitest/coverage-v8': 4.1.9(@vitest/browser@4.1.9)(vitest@4.1.9)

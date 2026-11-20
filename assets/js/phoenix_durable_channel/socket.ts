@@ -27,6 +27,7 @@ import {
   type TransportKind,
 } from "./machines/socket"
 import { Serializer, type EncodedMessage, type Message } from "./serializer"
+import type { TracingOptions } from "./tracing"
 import { appendParams, type Params } from "./url"
 
 export type { ConnectionState }
@@ -53,6 +54,8 @@ export interface SocketOptions {
   disconnectAfterInactiveMs?: number
   encode?: (message: Message, callback: (encoded: EncodedMessage) => void) => void
   decode?: (raw: EncodedMessage, callback: (message: Message) => void) => void
+  carrier?: string
+  requireParentSpan?: boolean
 }
 
 type ErrorCallback = (
@@ -88,6 +91,7 @@ export class Socket {
   readonly logger: SocketOptions["logger"]
   readonly encode: NonNullable<SocketOptions["encode"]>
   readonly decode: NonNullable<SocketOptions["decode"]>
+  readonly tracing: TracingOptions
   params: () => Params
   private readonly authToken: (() => string) | null
   private ref = 0
@@ -112,6 +116,10 @@ export class Socket {
       ((message, callback) => Serializer.encode(message, callback))
     this.decode =
       (json ? undefined : options.decode) ?? ((raw, callback) => Serializer.decode(raw, callback))
+    this.tracing = {
+      carrier: options.carrier,
+      requireParentSpan: options.requireParentSpan ?? false,
+    }
     const params = options.params ?? {}
     this.params = typeof params === "function" ? params : () => params
     const authToken = options.authToken

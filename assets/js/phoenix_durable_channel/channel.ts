@@ -9,10 +9,12 @@ import { Push } from "./push"
 import { Reply } from "./reply"
 import type { Message } from "./serializer"
 import type { Params } from "./url"
+import { injectCarrier, processMessage, type TracingOptions } from "./tracing"
 import { decodeReply } from "./wire"
 
 export interface ChannelSocket {
   timeout: number
+  readonly tracing: TracingOptions
   readonly establishedConnections: number
   isConnected(): boolean
   makeRef(): string
@@ -175,8 +177,9 @@ export class Channel {
         `tried to push '${event}' to '${this.topic}' before joining. Use channel.join() before pushing events`,
       )
     }
-    if (typeof timeoutOrOptions === "object") return this.extension.push(event, payload)
-    const push = new Push(event, payload, timeoutOrOptions, (finished) =>
+    const carried = injectCarrier(this.socket.tracing, event, payload)
+    if (typeof timeoutOrOptions === "object") return this.extension.push(event, carried)
+    const push = new Push(event, carried, timeoutOrOptions, (finished) =>
       this.pushes.delete(finished),
     )
     this.pushes.add(push)
@@ -276,9 +279,11 @@ export class Channel {
     ref: string | null = null,
     joinRef: string | null = null,
   ): void {
-    const handled = this.onMessage(event, payload, ref, joinRef)
-    for (const binding of [...this.bindings])
-      if (binding.event === event) binding.callback(handled, ref, joinRef ?? this.joinRef())
+    processMessage(this.socket.tracing, this.topic, event, payload, () => {
+      const handled = this.onMessage(event, payload, ref, joinRef)
+      for (const binding of [...this.bindings])
+        if (binding.event === event) binding.callback(handled, ref, joinRef ?? this.joinRef())
+    })
   }
 
   private send(push: Push): void {

@@ -237,9 +237,24 @@ The calls and their arguments are the same. The behavior differs where phoenix.j
 - Presence keys such as `"toString"` or `"__proto__"` are ordinary keys.
 - `heartbeatTimeoutMs` (default 10 s) is separate from the heartbeat interval.
 
-New socket options: `heartbeatTimeoutMs`, `websocketRetryAfterMs`, `offlineAfterMs`, `activity` (an `ActivityTracker` from `@supergrain/activity`) and `disconnectAfterInactiveMs`. `socket.status` and `channel.status` are reactive supergrain objects (`connectionState`, `transport`, `online`; `state`).
+New socket options: `heartbeatTimeoutMs`, `websocketRetryAfterMs`, `offlineAfterMs`, `activity` (an `ActivityTracker` from `@supergrain/activity`), `disconnectAfterInactiveMs`, and `carrier` and `requireParentSpan` ([Tracing](#tracing)). `socket.status` and `channel.status` are reactive supergrain objects (`connectionState`, `transport`, `online`; `state`).
 
 New channel options, the third argument of `socket.channel`: `durable`, `after` (the number of the last server message the app already has, a whole number of 0 or more, or `socket.channel` throws; without it the channel receives what is appended after its first join) and `readers` (below).
+
+## Tracing
+
+The client is instrumented with OpenTelemetry's API, `@opentelemetry/api` as a peer dependency, so it does nothing until the app registers an OpenTelemetry SDK. Phoenix messages have no headers, so the socket's `carrier` option names the payload key that carries the W3C trace context:
+
+```ts
+const socket = new Socket("/socket", { carrier: "meta", requireParentSpan: true })
+```
+
+- A push, durable or not, made while a span is active gets that span's context under `meta`, unless its payload already has a `meta` or isn't a plain object. A durable push sent again carries the context it was first made in.
+- Each incoming message's handlers run in a `process <topic template>` consumer span, named and attributed by OpenTelemetry's messaging conventions (`room:lobby` gives `process room:*`), whose parent is the context in the message's `meta`.
+- With `requireParentSpan`, a message with no context in its `meta` gets no span, so only messages the server sent as part of a trace are traced in the browser.
+- The library's own `phx_` events are never traced.
+
+On the server, a wrapper that reads the context from `handle_in/3`'s payload, such as a channel instrumentation, goes before `use PhoenixDurableChannel.Channel`. The `use` that comes last wraps the others, so the durable channel then hands the wrapper a durable message's plain payload.
 
 ## How durable messages work
 
