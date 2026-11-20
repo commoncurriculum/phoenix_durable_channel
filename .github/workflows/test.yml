@@ -19,8 +19,8 @@ jobs:
 
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "25.3.2.21"
-          elixir-version: "1.17.3-otp-25"
+          otp-version: "27.3.4.9"
+          elixir-version: "1.17.3-otp-27"
           version-type: strict
 
       - uses: actions/cache@v4
@@ -91,8 +91,8 @@ jobs:
 
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "25.3.2.21"
-          elixir-version: "1.17.3-otp-25"
+          otp-version: "27.3.4.9"
+          elixir-version: "1.17.3-otp-27"
           version-type: strict
 
       - name: Every commit type checks and has no comments
