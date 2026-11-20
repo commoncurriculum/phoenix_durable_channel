@@ -1,8 +1,33 @@
-import { context, propagation, ROOT_CONTEXT, SpanKind, trace } from "@opentelemetry/api"
+import {
+  context,
+  propagation,
+  ROOT_CONTEXT,
+  SpanKind,
+  trace,
+  type SpanContext,
+} from "@opentelemetry/api"
+
+export interface TracedMessage {
+  readonly topic: string
+  readonly event: string
+  readonly payload: unknown
+  readonly parent: SpanContext | undefined
+}
 
 export interface TracingOptions {
-  readonly carrier: string | undefined
-  readonly requireParentSpan: boolean
+  carrier: string
+  shouldTraceMessage?: (message: TracedMessage) => boolean
+  topicPattern?: (topic: string) => string
+}
+
+export interface Tracing {
+  inject(payload: unknown): unknown
+  process(topic: string, event: string, payload: unknown, handle: () => void): void
+}
+
+const untraced: Tracing = {
+  inject: (payload) => payload,
+  process: (_topic, _event, _payload, handle) => handle(),
 }
 
 const isPlainObject = (payload: unknown): payload is Record<string, unknown> =>
@@ -10,51 +35,54 @@ const isPlainObject = (payload: unknown): payload is Record<string, unknown> =>
   payload !== null &&
   Object.getPrototypeOf(payload) === Object.prototype
 
-const traced = (key: string | undefined, event: string): key is string =>
-  key !== undefined && !event.startsWith("phx_")
+const everyMessage = (): boolean => true
 
-export function injectCarrier(options: TracingOptions, event: string, payload: unknown): unknown {
-  const key = options.carrier
-  if (!traced(key, event) || !isPlainObject(payload) || payload[key] !== undefined) return payload
-  const carrier: Record<string, string> = {}
-  propagation.inject(context.active(), carrier)
-  return Object.keys(carrier).length === 0 ? payload : { ...payload, [key]: carrier }
-}
+const wildcardTopicPattern = (topic: string): string => topic.replace(/:.*/, ":*")
 
-export function processMessage(
-  options: TracingOptions,
-  topic: string,
-  event: string,
-  payload: unknown,
-  handle: () => void,
-): void {
-  const key = options.carrier
-  if (!traced(key, event)) return handle()
-  const carrier = isPlainObject(payload) && isPlainObject(payload[key]) ? payload[key] : {}
-  const parent = propagation.extract(ROOT_CONTEXT, carrier)
-  if (options.requireParentSpan && trace.getSpanContext(parent) === undefined) return handle()
-
-  const template = topic.replace(/:.*/, ":*")
-  trace.getTracer("phoenix_durable_channel").startActiveSpan(
-    `process ${template}`,
-    {
-      kind: SpanKind.CONSUMER,
-      attributes: {
-        "messaging.system": "phoenix",
-        "messaging.operation.name": "process",
-        "messaging.operation.type": "process",
-        "messaging.destination.name": topic,
-        "messaging.destination.template": template,
-        "phoenix.channel.event": event,
-      },
+export function createTracing(options: TracingOptions | undefined): Tracing {
+  if (options === undefined) return untraced
+  const {
+    carrier,
+    shouldTraceMessage = everyMessage,
+    topicPattern = wildcardTopicPattern,
+  } = options
+  const tracer = trace.getTracer("phoenix_durable_channel")
+  return {
+    inject(payload) {
+      if (!isPlainObject(payload) || payload[carrier] !== undefined) return payload
+      const injected: Record<string, string> = {}
+      propagation.inject(context.active(), injected)
+      return Object.keys(injected).length === 0 ? payload : { ...payload, [carrier]: injected }
     },
-    parent,
-    (span) => {
-      try {
-        handle()
-      } finally {
-        span.end()
-      }
+    process(topic, event, payload, handle) {
+      const carried =
+        isPlainObject(payload) && isPlainObject(payload[carrier]) ? payload[carrier] : {}
+      const parent = propagation.extract(ROOT_CONTEXT, carried)
+      if (!shouldTraceMessage({ topic, event, payload, parent: trace.getSpanContext(parent) }))
+        return handle()
+      const pattern = topicPattern(topic)
+      tracer.startActiveSpan(
+        `process ${pattern}`,
+        {
+          kind: SpanKind.CONSUMER,
+          attributes: {
+            "messaging.system": "phoenix",
+            "messaging.operation.name": "process",
+            "messaging.operation.type": "process",
+            "messaging.destination.name": topic,
+            "messaging.destination.template": pattern,
+            "phoenix.channel.event": event,
+          },
+        },
+        parent,
+        (span) => {
+          try {
+            handle()
+          } finally {
+            span.end()
+          }
+        },
+      )
     },
-  )
+  }
 }
