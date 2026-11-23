@@ -10,7 +10,7 @@ export type { Message } from "./serializer"
 export { Socket } from "./socket"
 export type { ConnectionState, SocketOptions } from "./socket"
 export { DurableStream, S2Stream } from "./stream"
-export type { TracedMessage, TracingOptions } from "./tracing"
+export type { TracedMessage, TracingOptions, UntracedMessage } from "./tracing"
 export type {
   DurableStreamOptions,
   MessageStream,

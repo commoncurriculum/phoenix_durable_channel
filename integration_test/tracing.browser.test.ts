@@ -5,7 +5,11 @@ import { expect, test } from "vitest"
 import type { Channel } from "../assets/js/phoenix_durable_channel/channel"
 import { LongPoll } from "../assets/js/phoenix_durable_channel/longpoll"
 import type { SocketOptions } from "../assets/js/phoenix_durable_channel/socket"
-import type { TracedMessage, TracingOptions } from "../assets/js/phoenix_durable_channel/tracing"
+import type {
+  TracedMessage,
+  TracingOptions,
+  UntracedMessage,
+} from "../assets/js/phoenix_durable_channel/tracing"
 import { answer, join, nextEvent, openSocket, topic } from "./support/helpers"
 
 trace.setGlobalTracerProvider(new TracerProvider())
@@ -154,6 +158,35 @@ test("shouldTraceMessage sees each incoming message and decides whether its hand
     { topic: channel.topic, event: "broadcasted", payload: { meta: actionMeta } },
   ])
   expect(asked.map(({ parent }) => parent?.traceId)).toEqual([undefined, actionTraceId])
+})
+
+test("the handlers of a message shouldTraceMessage leaves out run in the context untracedContext returns, which sees its pattern", async () => {
+  const asked: Array<UntracedMessage> = []
+  const outer = trace.getTracer("test").startSpan("interaction")
+  const channel = await joined(
+    traced({
+      shouldTraceMessage: ({ parent }) => parent !== undefined,
+      untracedContext: (message) => {
+        asked.push(message)
+        return trace.setSpan(context.active(), outer)
+      },
+    }),
+  )
+  const seen = activeTraceIds(channel, "broadcasted")
+
+  await broadcast(channel, { body: "presence" })
+  await broadcast(channel, { meta: actionMeta })
+  outer.end()
+
+  expect(seen).toEqual([outer.spanContext().traceId, actionTraceId])
+  expect(asked).toEqual([
+    {
+      topic: channel.topic,
+      pattern: "room:*",
+      event: "broadcasted",
+      payload: { body: "presence" },
+    },
+  ])
 })
 
 test("a span is named after the topic's pattern, room:* for room:lobby by default, or what topicPattern returns", async () => {
