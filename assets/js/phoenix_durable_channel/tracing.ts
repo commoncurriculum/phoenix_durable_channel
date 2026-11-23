@@ -4,6 +4,7 @@ import {
   ROOT_CONTEXT,
   SpanKind,
   trace,
+  type Context,
   type SpanContext,
 } from "@opentelemetry/api"
 
@@ -14,10 +15,18 @@ export interface TracedMessage {
   readonly parent: SpanContext | undefined
 }
 
+export interface UntracedMessage {
+  readonly topic: string
+  readonly pattern: string
+  readonly event: string
+  readonly payload: unknown
+}
+
 export interface TracingOptions {
   carrier: string
   shouldTraceMessage?: (message: TracedMessage) => boolean
   topicPattern?: (topic: string) => string
+  untracedContext?: (message: UntracedMessage) => Context
 }
 
 export interface Tracing {
@@ -39,12 +48,15 @@ const everyMessage = (): boolean => true
 
 const wildcardTopicPattern = (topic: string): string => topic.replace(/:.*/, ":*")
 
+const activeContext = (): Context => context.active()
+
 export function createTracing(options: TracingOptions | undefined): Tracing {
   if (options === undefined) return untraced
   const {
     carrier,
     shouldTraceMessage = everyMessage,
     topicPattern = wildcardTopicPattern,
+    untracedContext = activeContext,
   } = options
   const tracer = trace.getTracer("phoenix_durable_channel")
   return {
@@ -58,9 +70,11 @@ export function createTracing(options: TracingOptions | undefined): Tracing {
       const carried =
         isPlainObject(payload) && isPlainObject(payload[carrier]) ? payload[carrier] : {}
       const parent = propagation.extract(ROOT_CONTEXT, carried)
-      if (!shouldTraceMessage({ topic, event, payload, parent: trace.getSpanContext(parent) }))
-        return handle()
       const pattern = topicPattern(topic)
+      if (!shouldTraceMessage({ topic, event, payload, parent: trace.getSpanContext(parent) })) {
+        context.with(untracedContext({ topic, pattern, event, payload }), handle)
+        return
+      }
       tracer.startActiveSpan(
         `process ${pattern}`,
         {
