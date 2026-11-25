@@ -1,4 +1,10 @@
 defmodule PhoenixDurableChannel.Stream do
+  @type reader :: %{
+          required(:type) => String.t(),
+          required(:last) => non_neg_integer(),
+          optional(atom()) => term()
+        }
+
   @callback append(
               socket :: Phoenix.Socket.t(),
               event :: String.t(),
@@ -14,8 +20,7 @@ defmodule PhoenixDurableChannel.Stream do
               received :: non_neg_integer()
             ) :: pos_integer() | :moved
 
-  @callback reader(socket :: Phoenix.Socket.t()) :: %{
-              required(:type) => String.t(),
-              required(:last) => non_neg_integer()
-            }
+  @callback reader(socket :: Phoenix.Socket.t()) :: reader()
+
+  @callback delivery() :: :channel | :store
 end

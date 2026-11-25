@@ -9,15 +9,15 @@ Phoenix Channels where a message you mark durable is not lost while your store k
 
 It is laid out like Phoenix's own repo: the Elixir package at the root, the JavaScript client under `assets/js`.
 
-| Path                                | What it is                                                                                                                                                  |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mix.exs`, `lib/`                   | The Elixir package `phoenix_durable_channel`: `PhoenixDurableChannel.Channel`, the serializer, the stores                                                   |
-| `assets/js/phoenix_durable_channel` | The npm package `phoenix_durable_channel`: `Socket`, `Channel`, `Push`, `Presence`, `LongPoll`, in TypeScript on XState, Effect and supergrain              |
-| `integration_test/`                 | Browser tests: the client in Chromium against `integration_test/phoenix_app`, a real Phoenix app on this library, with real MongoDB, S2 and Durable Streams |
-| `test/`                             | Phoenix's own server channel and serializer tests, copied from Phoenix, run on `PhoenixDurableChannel.Channel` and its serializer                           |
-| `phoenix_js_test/`                  | Phoenix's own JavaScript client tests, copied from Phoenix, run on this client                                                                              |
-| `jepsen/`                           | A Jepsen test of durable messages under partitions, crashes and pauses                                                                                      |
-| `verification/`                     | TLA+ models of the client and the server channel                                                                                                            |
+| Path                                | What it is                                                                                                                                                             |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mix.exs`, `lib/`                   | The Elixir package `phoenix_durable_channel`: `PhoenixDurableChannel.Channel`, the serializer, the stores                                                              |
+| `assets/js/phoenix_durable_channel` | The npm package `phoenix_durable_channel`: `Socket`, `Channel`, `Push`, `Presence`, `LongPoll`, in TypeScript on XState, Effect and supergrain                         |
+| `integration_test/`                 | Browser tests: the client in Chromium against `integration_test/phoenix_app`, a real Phoenix app on this library, with real MongoDB, S2 and Durable Streams            |
+| `test/`                             | Phoenix's own server channel and serializer tests, copied from Phoenix, run on `PhoenixDurableChannel.Channel` and its serializer, and the library's own channel tests |
+| `phoenix_js_test/`                  | Phoenix's own JavaScript client tests, copied from Phoenix, run on this client                                                                                         |
+| `jepsen/`                           | A Jepsen test of durable messages under partitions, crashes and pauses                                                                                                 |
+| `verification/`                     | TLA+ models of the client and the server channel                                                                                                                       |
 
 ## Install
 
@@ -265,7 +265,7 @@ On the server, a wrapper that reads the context from `handle_in/3`'s payload, su
 
 ## How durable messages work
 
-On the wire, a durable message's number is a sixth element of the V2 frame, `[join_ref, ref, topic, event, payload, number]`, and one the server pushes adds its epoch as a seventh. A client opened with `durable` joins with `phx_durable: true`. The server channel assigns `phx_durable` and adds `phx_durable: true` to the join reply, so the client knows the server speaks durable messages. On a channel joined without it, `phx_sync`, `phx_read`, `phx_reader` and any numbered frame are answered `{:error, %{reason: "invalid"}}`, as is a `phx_read` with an `after` that is not a number of 0 or more, or on a stream that is not read through the channel.
+On the wire, a durable message's number is a sixth element of the V2 frame, `[join_ref, ref, topic, event, payload, number]`, and one the server pushes adds its epoch as a seventh. A client opened with `durable` joins with `phx_durable: true`. The server channel assigns `phx_durable` and adds `phx_durable: true` to the join reply, so the client knows the server speaks durable messages. On a channel joined without it, `phx_sync`, `phx_read`, `phx_reader` and any numbered frame are answered `{:error, %{reason: "invalid"}}`, as is a numbered frame whose number is not a positive integer, a `phx_read` with an `after` that is not a number of 0 or more, or on a stream that is not read through the channel.
 
 Both directions are one list: the topic's stream.
 
@@ -303,7 +303,7 @@ One behaviour, `PhoenixDurableChannel.Stream`: `append/4` numbers and keeps a me
 | `DurableStreams` | a Durable Streams stream per topic                                                                  | `{type: "durable-streams", url, token, last, offset}` |
 | `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart                            | `{type: "phoenix", last, epoch}`                      |
 
-A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3` and `epoch/1`) is read through the channel. Any other is read from the store's own protocol.
+Every stream says how its messages reach the client with `delivery/0`. One that returns `:channel` also implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3` and `epoch/1`) and is read through the channel. One that returns `:store` is read from the store's own protocol.
 
 **Read through the channel** (`Mongo`, `Memory`, or your own `ThroughChannel`):
 
@@ -339,7 +339,7 @@ mix test
 npx jest -c phoenix_js_test/jest.config.cjs -i
 ```
 
-`mix test` runs Phoenix 1.8.16's channel tests (`test/phoenix/integration`, `test/phoenix/test/channel_test.exs`) and its V2 serializer test, as Phoenix ships them, with three changes: each test channel adds `use PhoenixDurableChannel.Channel`, each test endpoint's socket uses `PhoenixDurableChannel.Serializer` for vsn 2.0.0, and the log assertion names that serializer. When Phoenix releases, copy its files over and make the same three changes; `diff` against Phoenix's tag shows exactly them.
+`mix test` runs Phoenix 1.8.16's channel tests (`test/phoenix/integration`, `test/phoenix/test/channel_test.exs`) and its V2 serializer test, as Phoenix ships them, with three changes: each test channel adds `use PhoenixDurableChannel.Channel`, each test endpoint's socket uses `PhoenixDurableChannel.Serializer` for vsn 2.0.0, and the log assertion names that serializer. When Phoenix releases, copy its files over and make the same three changes; `diff` against Phoenix's tag shows exactly them. `test/phoenix_durable_channel` tests the server channel's durable protocol through `Phoenix.ChannelTest` on the `Memory` store.
 
 `phoenix_js_test/` runs Phoenix 1.8.16's `assets/test` against this client, through `phoenix_js_test/js/phoenix`, which re-exports it. Most of those tests reach into phoenix.js's private members (`socket.conn`, `channel.joinPush`, `trigger()`, its timers and transport handlers), which this client does not have. `phoenix_js_test/internals.json` lists each such test with what it reaches into. The run fails if any other test fails, or if a listed test starts passing. `PHOENIX_JS_TEST_RECORD=1` rewrites the list, keeping the reasons already written; a new entry needs its reason written by hand.
 

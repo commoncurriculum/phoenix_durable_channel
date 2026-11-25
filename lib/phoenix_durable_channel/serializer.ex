@@ -17,27 +17,21 @@ defmodule PhoenixDurableChannel.Serializer do
 
   @impl true
   def decode!(raw, options) do
-    case options[:opcode] == :text and Phoenix.json_library().decode!(raw) do
-      [join_reference, reference, topic, event, payload, number] ->
-        %Message{
-          join_ref: join_reference,
-          ref: reference,
-          topic: topic,
-          event: event,
-          payload: {:durable, number, payload}
-        }
-
-      [join_reference, reference, topic, event, payload] ->
-        %Message{
-          join_ref: join_reference,
-          ref: reference,
-          topic: topic,
-          event: event,
-          payload: payload
-        }
-
-      false ->
-        JSONSerializer.decode!(raw, options)
+    case Keyword.fetch(options, :opcode) do
+      {:ok, :text} -> raw |> Phoenix.json_library().decode!() |> message()
+      _binary -> JSONSerializer.decode!(raw, options)
     end
   end
+
+  defp message([join_ref, ref, topic, event, payload, number]),
+    do: %Message{
+      join_ref: join_ref,
+      ref: ref,
+      topic: topic,
+      event: event,
+      payload: {:durable, number, payload}
+    }
+
+  defp message([join_ref, ref, topic, event, payload]),
+    do: %Message{join_ref: join_ref, ref: ref, topic: topic, event: event, payload: payload}
 end

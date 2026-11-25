@@ -385,6 +385,9 @@ defmodule TestServer.SlowMemory do
   def reader(socket), do: Memory.reader(socket)
 
   @impl true
+  def delivery, do: :channel
+
+  @impl true
   def epoch(socket), do: Memory.epoch(socket)
 
   @impl true
@@ -426,6 +429,9 @@ defmodule TestServer.Contended do
   def reader(socket), do: Memory.reader(socket)
 
   @impl true
+  def delivery, do: :channel
+
+  @impl true
   def epoch(socket), do: Memory.epoch(socket)
 
   @impl true
@@ -448,6 +454,9 @@ defmodule TestServer.Unreadable do
 
   @impl true
   def reader(socket), do: Memory.reader(socket)
+
+  @impl true
+  def delivery, do: :store
 end
 
 defmodule TestServer.Elsewhere do
@@ -463,6 +472,9 @@ defmodule TestServer.Elsewhere do
   @impl true
   def count(socket, last, received),
     do: PhoenixDurableChannel.Stream.S2.count(socket, last, received)
+
+  @impl true
+  def delivery, do: :store
 
   @impl true
   def reader(socket),
@@ -486,6 +498,9 @@ defmodule TestServer.ExpiringDurableStreams do
 
   @impl true
   def count(socket, last, received), do: DurableStreams.count(socket, last, received)
+
+  @impl true
+  def delivery, do: :store
 
   @impl true
   def reader(socket) do
