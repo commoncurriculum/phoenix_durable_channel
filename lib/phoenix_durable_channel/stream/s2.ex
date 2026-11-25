@@ -43,6 +43,9 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   end
 
   @impl PhoenixDurableChannel.Stream
+  def delivery, do: :store
+
+  @impl PhoenixDurableChannel.Stream
   def reader(socket) do
     %{
       type: "s2",
