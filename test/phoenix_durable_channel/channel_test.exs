@@ -5,62 +5,13 @@ defmodule PhoenixDurableChannel.ChannelTest do
 
   import ExUnit.CaptureLog
   import Phoenix.ChannelTest
+  import PhoenixDurableChannel.Test
 
-  alias __MODULE__.{ClientChannel, Endpoint, UserSocket}
-
-  Application.put_env(:phoenix_durable_channel, Endpoint,
-    pubsub_server: __MODULE__.PubSub,
-    server: false
-  )
-
-  defmodule ClientChannel do
-    use Phoenix.Channel
-    use PhoenixDurableChannel.Channel, stream: PhoenixDurableChannel.Stream.Memory
-
-    def join(_topic, _params, socket), do: {:ok, socket}
-
-    def handle_in("run", _payload, socket) do
-      send(socket.assigns.test, {:ran, socket.assigns.phx_number})
-      {:reply, :ok, socket}
-    end
-
-    def handle_in("hibernate", _payload, socket), do: {:noreply, socket, :hibernate}
-    def handle_in("retry", _payload, socket), do: {:retry, :busy, socket}
-    def handle_in("crash", _payload, _socket), do: raise("crash requested by the test")
-
-    def handle_info({:publish, event, payload}, socket) do
-      :ok = push_durable(socket, event, payload)
-      {:noreply, socket}
-    end
-  end
-
-  defmodule UserSocket do
-    use Phoenix.Socket
-
-    channel("client:*", ClientChannel)
-
-    def connect(_params, socket, _connect_info), do: {:ok, socket}
-    def id(_socket), do: nil
-  end
-
-  defmodule Endpoint do
-    use Phoenix.Endpoint, otp_app: :phoenix_durable_channel
-  end
-
-  @endpoint Endpoint
-
-  setup_all do
-    start_supervised!({Phoenix.PubSub, name: __MODULE__.PubSub})
-    start_supervised!(Endpoint)
-    :ok
-  end
+  alias PhoenixDurableChannel.Test.ClientChannel
 
   setup do
-    topic = "client:#{System.unique_integer([:positive])}"
-    {:ok, reply, socket} = durable_join(topic)
-    assert reply == %{phx_durable: true}
-    assert_push("phx_reader", %{type: "phoenix", last: 0})
-    %{socket: socket, topic: topic}
+    topic = topic()
+    %{socket: durable_join(topic), topic: topic}
   end
 
   def forward(event, _measurements, metadata, test), do: send(test, {:telemetry, event, metadata})
@@ -127,11 +78,7 @@ defmodule PhoenixDurableChannel.ChannelTest do
   test "a handler's hibernate is kept after its answer is appended", %{socket: socket} do
     push(socket, "hibernate", {:durable, 1, %{}})
     assert_push("phx_reply", {:durable, 2, _epoch, %{number: 1, status: :ok}})
-
-    assert eventually(fn ->
-             Process.info(socket.channel_pid, :current_function) ==
-               {:current_function, {:erlang, :hibernate, 3}}
-           end)
+    assert idle(socket.channel_pid) == :hibernated
   end
 
   test "push_durable/3 refuses phx_reply", %{socket: socket} do
@@ -159,7 +106,7 @@ defmodule PhoenixDurableChannel.ChannelTest do
     Process.flag(:trap_exit, true)
     replaced = first.channel_pid
 
-    {:ok, _reply, _second} = durable_join(topic)
+    {:ok, _reply, _second} = client_join(topic, %{"phx_durable" => true})
 
     assert_push("phx_error", %{})
     assert_receive {:EXIT, ^replaced, {:shutdown, :replaced}}
@@ -167,12 +114,7 @@ defmodule PhoenixDurableChannel.ChannelTest do
   end
 
   test "a channel joined without phx_durable refuses durable frames and durable events" do
-    {:ok, reply, plain} =
-      UserSocket
-      |> socket(nil, %{test: self()})
-      |> subscribe_and_join(ClientChannel, "client:#{System.unique_integer([:positive])}", %{})
-
-    assert reply == %{}
+    plain = plain_join()
 
     for {event, payload} <- [{"run", {:durable, 1, %{}}}, {"phx_sync", %{}}, {"phx_reader", %{}}] do
       ref = push(plain, event, payload)
@@ -180,31 +122,5 @@ defmodule PhoenixDurableChannel.ChannelTest do
     end
 
     refute_received {:ran, _number}
-  end
-
-  defp durable_join(topic) do
-    UserSocket
-    |> socket(nil, %{test: self()})
-    |> subscribe_and_join(ClientChannel, topic, %{"phx_durable" => true})
-  end
-
-  defp received(socket) do
-    ref = push(socket, "phx_sync", %{})
-    assert_reply(ref, :ok, %{received: received})
-    received
-  end
-
-  defp eventually(check, attempts \\ 50) do
-    cond do
-      check.() ->
-        true
-
-      attempts == 0 ->
-        false
-
-      true ->
-        Process.sleep(10)
-        eventually(check, attempts - 1)
-    end
   end
 end
