@@ -5,6 +5,8 @@ defmodule PhoenixDurableChannel.Channel do
 
   @replace_timeout 5_000
   @page 500
+  @protocol ["phx_sync", "phx_read", "phx_reader"]
+  @invalid {:error, %{reason: "invalid"}}
 
   defmacro __using__(options) do
     stream = Keyword.fetch!(options, :stream)
@@ -30,72 +32,90 @@ defmodule PhoenixDurableChannel.Channel do
   end
 
   defmacro __before_compile__(env) do
-    defines_handle_info = Module.defines?(env.module, {:handle_info, 2})
     defines_handle_in = Module.defines?(env.module, {:handle_in, 3})
+    defines_handle_info = Module.defines?(env.module, {:handle_info, 2})
 
-    other_message =
+    app_handle_in =
+      if defines_handle_in,
+        do: quote(do: fn event, payload, socket -> super(event, payload, socket) end),
+        else: nil
+
+    app_handle_info =
       if defines_handle_info,
-        do: quote(do: super(message, socket)),
-        else: quote(do: PhoenixDurableChannel.Channel.unexpected_message(message, socket))
+        do: quote(do: fn message, socket -> super(message, socket) end),
+        else: quote(do: &PhoenixDurableChannel.Channel.unexpected_message/2)
 
-    handle_in =
-      if defines_handle_in do
-        quote do
-          def handle_in(event, {:durable, number, payload}, socket) do
-            PhoenixDurableChannel.Channel.handle_durable(
-              durable_stream(socket),
-              number,
-              socket,
-              fn socket -> super(event, payload, socket) end
-            )
-          end
-
-          def handle_in(event, payload, socket), do: super(event, payload, socket)
-        end
-      end
+    overridable =
+      [join: 3] ++
+        if(defines_handle_in, do: [handle_in: 3], else: []) ++
+        if(defines_handle_info, do: [handle_info: 2], else: [])
 
     quote do
-      defoverridable join: 3
-
-      if unquote(defines_handle_in), do: defoverridable(handle_in: 3)
+      defoverridable unquote(overridable)
 
       def join(topic, params, socket),
         do: PhoenixDurableChannel.Channel.join(params, fn -> super(topic, params, socket) end)
 
-      def handle_in("phx_sync", _payload, %{assigns: %{phx_durable: true}} = socket),
-        do: PhoenixDurableChannel.Channel.sync(durable_stream(socket), socket)
+      def handle_in(event, payload, socket),
+        do:
+          PhoenixDurableChannel.Channel.handle_in(
+            __MODULE__,
+            event,
+            payload,
+            socket,
+            unquote(app_handle_in)
+          )
 
-      def handle_in("phx_read", %{"after" => last}, %{assigns: %{phx_durable: true}} = socket)
-          when is_integer(last) and last >= 0,
-          do: PhoenixDurableChannel.Channel.read(durable_stream(socket), last, socket)
-
-      def handle_in("phx_reader", _payload, %{assigns: %{phx_durable: true}} = socket),
-        do: {:reply, {:ok, durable_stream(socket).reader(socket)}, socket}
-
-      def handle_in(event, _payload, socket) when event in ["phx_sync", "phx_read", "phx_reader"],
-        do: {:reply, {:error, %{reason: "invalid"}}, socket}
-
-      def handle_in(_event, {:durable, _number, _payload}, %{assigns: assigns} = socket)
-          when not is_map_key(assigns, :phx_durable),
-          do: {:reply, {:error, %{reason: "invalid"}}, socket}
-
-      def handle_in(_event, {:durable, number, _payload}, socket)
-          when not is_integer(number) or number < 1,
-          do: {:reply, {:error, %{reason: "invalid"}}, socket}
-
-      unquote(handle_in)
-
-      if unquote(defines_handle_info), do: defoverridable(handle_info: 2)
-
-      def handle_info(:phx_replaced, socket),
-        do: PhoenixDurableChannel.Channel.replaced(socket)
-
-      def handle_info(:phx_durable_joined, socket),
-        do: PhoenixDurableChannel.Channel.joined(&durable_stream/1, socket)
-
-      def handle_info(message, socket), do: unquote(other_message)
+      def handle_info(message, socket),
+        do:
+          PhoenixDurableChannel.Channel.handle_info(
+            __MODULE__,
+            message,
+            socket,
+            unquote(app_handle_info)
+          )
     end
   end
+
+  @doc false
+  def handle_in(channel, event, _payload, _socket, nil) when event not in @protocol,
+    do: raise(UndefinedFunctionError, module: channel, function: :handle_in, arity: 3)
+
+  def handle_in(channel, event, payload, %{assigns: %{phx_durable: true}} = socket, app),
+    do: durable_in(channel, event, payload, socket, app)
+
+  def handle_in(_channel, event, payload, socket, app), do: plain_in(event, payload, socket, app)
+
+  defp durable_in(channel, "phx_sync", _payload, socket, _app),
+    do: sync(channel.durable_stream(socket), socket)
+
+  defp durable_in(channel, "phx_read", %{"after" => last}, socket, _app)
+       when is_integer(last) and last >= 0,
+       do: read(channel.durable_stream(socket), last, socket)
+
+  defp durable_in(channel, "phx_reader", _payload, socket, _app),
+    do: {:reply, {:ok, channel.durable_stream(socket).reader(socket)}, socket}
+
+  defp durable_in(channel, event, {:durable, number, payload}, socket, app)
+       when is_integer(number) and number > 0,
+       do:
+         handle_durable(channel.durable_stream(socket), number, socket, &app.(event, payload, &1))
+
+  defp durable_in(_channel, event, payload, socket, app),
+    do: plain_in(event, payload, socket, app)
+
+  defp plain_in(event, _payload, socket, _app) when event in @protocol,
+    do: {:reply, @invalid, socket}
+
+  defp plain_in(_event, {:durable, _number, _payload}, socket, _app),
+    do: {:reply, @invalid, socket}
+
+  defp plain_in(event, payload, socket, app), do: app.(event, payload, socket)
+
+  @doc false
+  def handle_info(_channel, :phx_replaced, socket, _app), do: replaced(socket)
+  def handle_info(channel, :phx_durable_joined, socket, _app), do: joined(channel, socket)
+  def handle_info(_channel, message, socket, app), do: app.(message, socket)
 
   @doc false
   def join(%{"phx_durable" => true}, join) do
@@ -115,13 +135,12 @@ defmodule PhoenixDurableChannel.Channel do
     {:ok, Map.put(reply, :phx_durable, true), Socket.assign(socket, :phx_durable, true)}
   end
 
-  @doc false
-  def joined(stream_for, socket) do
+  defp joined(channel, socket) do
     take_over(socket)
     emit(:register, socket)
 
     socket = Socket.assign(socket, :phx_fence, fence())
-    stream = stream_for.(socket)
+    stream = channel.durable_stream(socket)
     reader = stream.reader(socket)
     emit(:reader, socket, %{last: reader.last})
 
@@ -180,6 +199,12 @@ defmodule PhoenixDurableChannel.Channel do
     end
   end
 
+  defp replaced(socket) do
+    emit(:replaced, socket)
+    Phoenix.Channel.push(socket, "phx_error", %{})
+    {:stop, {:shutdown, :replaced}, socket}
+  end
+
   @doc false
   def unexpected_message(message, socket) do
     process =
@@ -194,13 +219,6 @@ defmodule PhoenixDurableChannel.Channel do
     )
 
     {:noreply, socket}
-  end
-
-  @doc false
-  def replaced(socket) do
-    emit(:replaced, socket)
-    Phoenix.Channel.push(socket, "phx_error", %{})
-    {:stop, {:shutdown, :replaced}, socket}
   end
 
   @doc false
@@ -230,19 +248,17 @@ defmodule PhoenixDurableChannel.Channel do
   defp through_channel?(stream),
     do: Code.ensure_loaded?(stream) and function_exported?(stream, :since, 3)
 
-  @doc false
-  def sync(stream, socket) do
+  defp sync(stream, socket) do
     received = socket.assigns.phx_received
     reader = stream.reader(socket)
     emit(:sync, socket, %{received: received, last: reader.last})
     {:reply, {:ok, %{received: received, reader: reader}}, socket}
   end
 
-  @doc false
-  def read(stream, last, socket) do
+  defp read(stream, last, socket) do
     if through_channel?(stream),
       do: read_pages(stream, last, socket),
-      else: {:reply, {:error, %{reason: "invalid"}}, socket}
+      else: {:reply, @invalid, socket}
   end
 
   defp read_pages(stream, last, socket) do
@@ -257,24 +273,23 @@ defmodule PhoenixDurableChannel.Channel do
       else: {:reply, {:ok, %{sent: page.sent, epoch: page.epoch}}, socket}
   end
 
-  @doc false
-  def handle_durable(stream, number, socket, handle_in) do
+  defp handle_durable(stream, number, socket, handle_in) do
     received = socket.assigns.phx_received
 
     cond do
       number <= received ->
-        emit_push(socket, number, received, :old)
+        emit_push(socket, number, :old)
         {:noreply, socket}
 
       number > received + 1 ->
-        emit_push(socket, number, received, :ahead)
+        emit_push(socket, number, :ahead)
         {:reply, {:error, %{phx_not_taken: "out_of_order"}}, socket}
 
       true ->
         socket
         |> Socket.assign(:phx_number, number)
         |> run(handle_in)
-        |> answered(stream, number, received)
+        |> answered(stream, number)
     end
   end
 
@@ -286,34 +301,31 @@ defmodule PhoenixDurableChannel.Channel do
       {:reply, {:error, %{reason: "crashed"}}, socket}
   end
 
-  defp answered({:retry, reason, socket}, _stream, number, received) do
-    emit_push(socket, number, received, :retry)
+  defp answered({:retry, reason, socket}, _stream, number) do
+    emit_push(socket, number, :retry)
     {:reply, {:error, %{phx_not_taken: reason}}, socket}
   end
 
-  defp answered({:noreply, socket}, stream, number, _received),
+  defp answered({:noreply, socket}, stream, number),
     do: {:noreply, answer(stream, number, {:ok, %{}}, socket)}
 
-  defp answered({:noreply, socket, timeout_or_hibernate}, stream, number, _received),
+  defp answered({:noreply, socket, timeout_or_hibernate}, stream, number),
     do: {:noreply, answer(stream, number, {:ok, %{}}, socket), timeout_or_hibernate}
 
-  defp answered({:reply, status, socket}, stream, number, _received) when is_atom(status),
-    do: {:noreply, answer(stream, number, {status, %{}}, socket)}
+  defp answered({:reply, reply, socket}, stream, number),
+    do: {:noreply, answer(stream, number, reply(reply), socket)}
 
-  defp answered({:reply, reply, socket}, stream, number, _received),
-    do: {:noreply, answer(stream, number, reply, socket)}
+  defp answered({:stop, reason, socket}, stream, number),
+    do: answered({:stop, reason, :ok, socket}, stream, number)
 
-  defp answered({:stop, reason, socket}, stream, number, _received),
-    do: {:stop, reason, {:ok, %{}}, answer(stream, number, {:ok, %{}}, socket)}
+  defp answered({:stop, reason, reply, socket}, stream, number),
+    do: {:stop, reason, reply(reply), answer(stream, number, reply(reply), socket)}
 
-  defp answered({:stop, reason, status, socket}, stream, number, _received) when is_atom(status),
-    do: {:stop, reason, {status, %{}}, answer(stream, number, {status, %{}}, socket)}
-
-  defp answered({:stop, reason, reply, socket}, stream, number, _received),
-    do: {:stop, reason, reply, answer(stream, number, reply, socket)}
+  defp reply(status) when is_atom(status), do: {status, %{}}
+  defp reply({status, response}) when is_atom(status), do: {status, response}
 
   defp answer(stream, number, {status, response}, socket) do
-    emit_push(socket, number, socket.assigns.phx_received, status)
+    emit_push(socket, number, status)
 
     :ok =
       append(
@@ -327,8 +339,13 @@ defmodule PhoenixDurableChannel.Channel do
     Socket.assign(socket, :phx_received, number)
   end
 
-  defp emit_push(socket, number, received, outcome),
-    do: emit(:push, socket, %{number: number, received: received, outcome: outcome})
+  defp emit_push(socket, number, outcome),
+    do:
+      emit(:push, socket, %{
+        number: number,
+        received: socket.assigns.phx_received,
+        outcome: outcome
+      })
 
   defp emit(event, socket, metadata \\ %{}),
     do:
