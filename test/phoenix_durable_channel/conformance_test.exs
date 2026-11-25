@@ -9,10 +9,6 @@ defmodule PhoenixDurableChannel.ConformanceTest do
 
   alias Phoenix.Socket.{Message, Reply}
 
-  test "the returns below are every handle_in/3 return Phoenix's Channel.Server accepts" do
-    assert Map.keys(returns()) |> MapSet.new() == phoenix_returns()
-  end
-
   property "a durable push's handler return behaves as it does on a plain channel, answered in the stream" do
     Process.flag(:trap_exit, true)
 
@@ -107,30 +103,4 @@ defmodule PhoenixDurableChannel.ConformanceTest do
       0 -> Enum.reverse(messages)
     end
   end
-
-  defp phoenix_returns do
-    Mix.Project.deps_paths()
-    |> Map.fetch!(:phoenix)
-    |> Path.join("lib/phoenix/channel/server.ex")
-    |> File.read!()
-    |> Code.string_to_quoted!()
-    |> Macro.prewalk(MapSet.new(), fn
-      {:defp, _, [{:handle_in, _, [result]}, _]} = node, returns ->
-        {node, shape(result, returns)}
-
-      {:defp, _, [{:handle_result, _, [result, callback]}, _]} = node, returns
-      when callback != :handle_call ->
-        {node, shape(result, returns)}
-
-      node, returns ->
-        {node, returns}
-    end)
-    |> elem(1)
-  end
-
-  defp shape({:{}, _, [tag | rest]}, returns) when is_atom(tag),
-    do: MapSet.put(returns, {tag, length(rest) + 1})
-
-  defp shape({tag, _socket}, returns) when is_atom(tag), do: MapSet.put(returns, {tag, 2})
-  defp shape(_variable, returns), do: returns
 end

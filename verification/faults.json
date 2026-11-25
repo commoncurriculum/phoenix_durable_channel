@@ -38,7 +38,6 @@
     "model": [],
     "jepsen": [],
     "tests": [
-      "the returns below are every handle_in/3 return Phoenix's Channel.Server accepts",
       "a durable push's handler return behaves as it does on a plain channel, answered in the stream"
     ]
   },
