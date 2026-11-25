@@ -339,7 +339,7 @@ mix test
 npx jest -c phoenix_js_test/jest.config.cjs -i
 ```
 
-`mix test` runs Phoenix 1.8.16's channel tests (`test/phoenix/integration`, `test/phoenix/test/channel_test.exs`) and its V2 serializer test, as Phoenix ships them, with three changes: each test channel adds `use PhoenixDurableChannel.Channel`, each test endpoint's socket uses `PhoenixDurableChannel.Serializer` for vsn 2.0.0, and the log assertion names that serializer. When Phoenix releases, copy its files over and make the same three changes; `diff` against Phoenix's tag shows exactly them. `test/phoenix_durable_channel` tests the server channel's durable protocol through `Phoenix.ChannelTest` on the `Memory` store.
+`mix test` runs Phoenix 1.8.16's channel tests (`test/phoenix/integration`, `test/phoenix/test/channel_test.exs`) and its V2 serializer test, as Phoenix ships them, with three changes: each test channel adds `use PhoenixDurableChannel.Channel`, each test endpoint's socket uses `PhoenixDurableChannel.Serializer` for vsn 2.0.0, and the log assertion names that serializer. When Phoenix releases, copy its files over and make the same three changes; `diff` against Phoenix's tag shows exactly them. `test/phoenix_durable_channel` tests the server channel's durable protocol through `Phoenix.ChannelTest` on the `Memory` store, with two kinds of property tests (`stream_data`): every `handle_in/3` return that Phoenix's `Channel.Server` accepts, read from Phoenix's own source, must behave on a durable push as on a plain one; and any JSON frame must decode as Phoenix's V2 serializer decodes it, with the server running only the next number and answering every other one.
 
 `phoenix_js_test/` runs Phoenix 1.8.16's `assets/test` against this client, through `phoenix_js_test/js/phoenix`, which re-exports it. Most of those tests reach into phoenix.js's private members (`socket.conn`, `channel.joinPush`, `trigger()`, its timers and transport handlers), which this client does not have. `phoenix_js_test/internals.json` lists each such test with what it reaches into. The run fails if any other test fails, or if a listed test starts passing. `PHOENIX_JS_TEST_RECORD=1` rewrites the list, keeping the reasons already written; a new entry needs its reason written by hand.
 
@@ -377,6 +377,6 @@ TLA+ models of the socket, channel and push lifecycle, the client's durable push
 pnpm faults
 ```
 
-`verification/faults.json` lists every fault the library must survive, and for each one the TLA+ actions that model it, the Jepsen faults that cause it and the tests that cause it. `pnpm faults` fails on a name that does not exist and on a fault with nothing in the model, Jepsen or the tests.
+`verification/faults.json` lists every fault the library must survive, and for each one the TLA+ actions that model it, the Jepsen faults that cause it and the tests that cause it. `pnpm faults` fails on a name that does not exist and on a fault with nothing in the model, Jepsen or the tests, unless that gap is listed in `verification/uncovered.json`; it also fails on a listed gap that is covered now, so the list only shrinks on purpose. CI runs it.
 
 The `verify-phoenix-durable-channel` skill in `.agents/skills` lists the requirements every change is checked against, these models among them.

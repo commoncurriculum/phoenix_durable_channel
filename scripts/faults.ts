@@ -34,7 +34,7 @@ const tests = new Set(
     ...tracked("test/*.exs"),
     ...tracked("integration_test/*.exs"),
   ].flatMap((file) =>
-    [...readFileSync(file, "utf8").matchAll(/\btest\(?\s*"((?:[^"\\]|\\.)*)"/g)].map(
+    [...readFileSync(file, "utf8").matchAll(/\b(?:test|property)\(?\s*"((?:[^"\\]|\\.)*)"/g)].map(
       (match) => match[1],
     ),
   ),
@@ -63,13 +63,25 @@ const unknown = faults.flatMap((fault) => [
     .map((name) => `${fault.fault}: no test "${name}"`),
 ])
 
-const uncovered = faults.flatMap((fault) =>
+const gaps = faults.flatMap((fault) =>
   (["model", "jepsen", "tests"] as const)
     .filter((where) => fault[where].length === 0)
     .map((where) => `${fault.fault}: nothing in ${where}`),
 )
 
+const known: Array<string> = JSON.parse(readFileSync("verification/uncovered.json", "utf8"))
+const uncovered = gaps.filter((gap) => !known.includes(gap))
+const covered = known.filter((gap) => !gaps.includes(gap))
+
 if (unknown.length > 0)
   console.error(`Names in verification/faults.json that do not exist:\n${unknown.join("\n")}`)
-if (uncovered.length > 0) console.error(`Faults not covered:\n${uncovered.join("\n")}`)
-if (unknown.length > 0 || uncovered.length > 0) process.exit(1)
+if (uncovered.length > 0)
+  console.error(
+    `Faults not covered, and not in verification/uncovered.json:\n${uncovered.join("\n")}`,
+  )
+if (covered.length > 0)
+  console.error(
+    `Covered now, so take them out of verification/uncovered.json:\n${covered.join("\n")}`,
+  )
+console.log(`${known.length - covered.length} known gaps in verification/uncovered.json`)
+if (unknown.length > 0 || uncovered.length > 0 || covered.length > 0) process.exit(1)

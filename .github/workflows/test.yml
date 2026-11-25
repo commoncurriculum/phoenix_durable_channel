@@ -54,6 +54,9 @@ jobs:
       - name: Typecheck
         run: pnpm lint
 
+      - name: Every fault is covered, or a known gap
+        run: pnpm faults
+
       - name: Run tests
         run: pnpm test
 

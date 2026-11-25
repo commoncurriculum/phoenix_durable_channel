@@ -30,7 +30,27 @@
     "what": "The app's handle_in raises on a durable push; its crashed answer can be lost with the connection.",
     "model": [],
     "jepsen": [],
-    "tests": []
+    "tests": ["a handler that raises is answered crashed and the channel stays up"]
+  },
+  {
+    "fault": "handler returns any result Phoenix accepts",
+    "what": "The app's handle_in returns any result Phoenix's Channel.Server accepts, a timeout or :hibernate included.",
+    "model": [],
+    "jepsen": [],
+    "tests": [
+      "the returns below are every handle_in/3 return Phoenix's Channel.Server accepts",
+      "a durable push's handler return behaves as it does on a plain channel, answered in the stream"
+    ]
+  },
+  {
+    "fault": "client sends a malformed frame",
+    "what": "A client that is not this library sends any JSON as a frame, with anything in the number's slot.",
+    "model": [],
+    "jepsen": [],
+    "tests": [
+      "a text frame decodes as Phoenix's V2 serializer decodes it, but for a sixth slot's number",
+      "the server runs only the next number, counts only what it ran, and answers every other frame"
+    ]
   },
   {
     "fault": "handler cannot take a push",

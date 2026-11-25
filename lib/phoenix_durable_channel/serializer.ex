@@ -32,6 +32,6 @@ defmodule PhoenixDurableChannel.Serializer do
       payload: {:durable, number, payload}
     }
 
-  defp message([join_ref, ref, topic, event, payload]),
+  defp message([join_ref, ref, topic, event, payload | _rest]),
     do: %Message{join_ref: join_ref, ref: ref, topic: topic, event: event, payload: payload}
 end

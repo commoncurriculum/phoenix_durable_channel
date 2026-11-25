@@ -24,7 +24,8 @@ defmodule PhoenixDurableChannel.MixProject do
       {:cowlib, "~> 2.15.0", only: :test},
       {:ranch, "~> 2.1.0", only: :test},
       {:bandit, "~> 1.0", only: :test},
-      {:mint_web_socket, "~> 1.0.0", only: :test}
+      {:mint_web_socket, "~> 1.0.0", only: :test},
+      {:stream_data, "~> 1.1", only: :test}
     ]
   end
 end
