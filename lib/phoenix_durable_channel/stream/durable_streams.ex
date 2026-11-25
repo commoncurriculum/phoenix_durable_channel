@@ -187,6 +187,9 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
   end
 
   @impl PhoenixDurableChannel.Stream
+  def delivery, do: :store
+
+  @impl PhoenixDurableChannel.Stream
   def reader(socket) do
     GenServer.cast(__MODULE__, {:watch, socket.topic, self()})
     config = config()

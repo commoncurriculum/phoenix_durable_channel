@@ -84,7 +84,6 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     __MODULE__
     |> :ets.select([{{:"$1", %{touched_at: :"$2"}}, [{:<, :"$2", oldest}], [:"$1"]}])
     |> Enum.reject(&Map.has_key?(state.counts, &1))
-    |> Enum.reject(&(:global.whereis_name({PhoenixDurableChannel.Channel, &1}) != :undefined))
     |> Enum.each(&:ets.delete(__MODULE__, &1))
 
     {:noreply, state}
@@ -144,6 +143,9 @@ defmodule PhoenixDurableChannel.Stream.Memory do
 
   @impl PhoenixDurableChannel.Stream.ThroughChannel
   def epoch(socket), do: kept(socket.topic).epoch
+
+  @impl PhoenixDurableChannel.Stream
+  def delivery, do: :channel
 
   @impl PhoenixDurableChannel.Stream
   def reader(socket) do

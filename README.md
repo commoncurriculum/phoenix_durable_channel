@@ -303,7 +303,7 @@ One behaviour, `PhoenixDurableChannel.Stream`: `append/4` numbers and keeps a me
 | `DurableStreams` | a Durable Streams stream per topic                                                                  | `{type: "durable-streams", url, token, last, offset}` |
 | `Memory`         | the node's memory; each node's own numbering (an epoch), lost on restart                            | `{type: "phoenix", last, epoch}`                      |
 
-A stream that implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3` and `epoch/1`) is read through the channel. Any other is read from the store's own protocol.
+Every stream says how its messages reach the client with `delivery/0`. One that returns `:channel` also implements `PhoenixDurableChannel.Stream.ThroughChannel` (`since/3` and `epoch/1`) and is read through the channel. One that returns `:store` is read from the store's own protocol.
 
 **Read through the channel** (`Mongo`, `Memory`, or your own `ThroughChannel`):
 

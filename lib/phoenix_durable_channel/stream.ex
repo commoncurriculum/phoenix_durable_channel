@@ -21,4 +21,6 @@ defmodule PhoenixDurableChannel.Stream do
             ) :: pos_integer() | :moved
 
   @callback reader(socket :: Phoenix.Socket.t()) :: reader()
+
+  @callback delivery() :: :channel | :store
 end

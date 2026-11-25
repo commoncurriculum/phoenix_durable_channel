@@ -78,6 +78,9 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
   def epoch(_socket), do: @epoch
 
   @impl PhoenixDurableChannel.Stream
+  def delivery, do: :channel
+
+  @impl PhoenixDurableChannel.Stream
   def reader(socket), do: %{type: "phoenix", last: last(socket.topic), epoch: @epoch}
 
   @impl PhoenixDurableChannel.Stream

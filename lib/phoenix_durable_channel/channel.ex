@@ -231,22 +231,21 @@ defmodule PhoenixDurableChannel.Channel do
   defp append(stream, socket, event, payload, received) do
     number = stream.append(socket, event, payload, received)
     emit(:append, socket, %{number: number, received: received})
-
-    case socket.assigns do
-      %{phx_durable: true} ->
-        if through_channel?(stream),
-          do:
-            Phoenix.Channel.push(socket, event, {:durable, number, stream.epoch(socket), payload})
-
-      _plain ->
-        Phoenix.Channel.push(socket, event, payload)
-    end
-
-    :ok
+    push(socket, stream, number, event, payload)
   end
 
-  defp through_channel?(stream),
-    do: Code.ensure_loaded?(stream) and function_exported?(stream, :since, 3)
+  defp push(%{assigns: %{phx_durable: true}} = socket, stream, number, event, payload) do
+    case stream.delivery() do
+      :channel ->
+        Phoenix.Channel.push(socket, event, {:durable, number, stream.epoch(socket), payload})
+
+      :store ->
+        :ok
+    end
+  end
+
+  defp push(socket, _stream, _number, event, payload),
+    do: Phoenix.Channel.push(socket, event, payload)
 
   defp sync(stream, socket) do
     received = socket.assigns.phx_received
@@ -256,9 +255,10 @@ defmodule PhoenixDurableChannel.Channel do
   end
 
   defp read(stream, last, socket) do
-    if through_channel?(stream),
-      do: read_pages(stream, last, socket),
-      else: {:reply, @invalid, socket}
+    case stream.delivery() do
+      :channel -> read_pages(stream, last, socket)
+      :store -> {:reply, @invalid, socket}
+    end
   end
 
   defp read_pages(stream, last, socket) do
