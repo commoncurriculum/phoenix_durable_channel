@@ -16,36 +16,15 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
           ]
         ])
 
-  def find_newest(topic),
-    do:
-      Mongo.find_one(config()[:name], config()[:messages], %{topic: topic},
-        sort: [number: -1],
-        projection: %{number: 1}
-      ) || %{}
-
-  def last(topic), do: find_newest(topic)["number"] || 0
-
   @impl PhoenixDurableChannel.Stream
-  def append(socket, event, payload, received),
-    do: append(socket, event, payload, received, last(socket.topic) + 1)
+  def append(socket, event, payload, received) do
+    number = last(socket.topic) + 1
 
-  def append(socket, event, payload, received, number) do
-    document = %{
-      topic: socket.topic,
-      number: number,
-      event: event,
-      payload: payload,
-      received: received
-    }
-
-    case Mongo.insert_one(config()[:name], config()[:messages], document) do
-      {:ok, _result} ->
+    case insert(socket.topic, number, event, payload, received) do
+      :ok ->
         number
 
-      {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} ->
-        append(socket, event, payload, received)
-
-      {:error, %Mongo.Error{code: 11_000}} ->
+      :taken ->
         append(socket, event, payload, received)
 
       {:error, error} ->
@@ -55,26 +34,26 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
 
   @impl PhoenixDurableChannel.Stream
   def count(socket, last, received) do
-    document = %{
-      topic: socket.topic,
-      number: last + 1,
-      event: "phx_reply",
-      payload: %{received: received},
-      received: received
-    }
-
-    case Mongo.insert_one(config()[:name], config()[:messages], document) do
-      {:ok, _result} ->
+    case insert(socket.topic, last + 1, "phx_reply", %{received: received}, received) do
+      :ok ->
         last + 1
 
-      {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} ->
-        :moved
-
-      {:error, %Mongo.Error{code: 11_000}} ->
+      :taken ->
         :moved
 
       {:error, error} ->
         raise "Mongo refused the count of #{socket.topic}: #{Exception.message(error)}"
+    end
+  end
+
+  defp insert(topic, number, event, payload, received) do
+    document = %{topic: topic, number: number, event: event, payload: payload, received: received}
+
+    case Mongo.insert_one(config()[:name], config()[:messages], document) do
+      {:ok, _result} -> :ok
+      {:error, %Mongo.WriteError{write_errors: [%{"code" => 11_000}]}} -> :taken
+      {:error, %Mongo.Error{code: 11_000}} -> :taken
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -102,15 +81,26 @@ defmodule PhoenixDurableChannel.Stream.Mongo do
   def reader(socket), do: %{type: "phoenix", last: last(socket.topic), epoch: @epoch}
 
   @impl PhoenixDurableChannel.Stream
-  def received(socket),
-    do:
-      (Mongo.find_one(
-         config()[:name],
-         config()[:messages],
-         %{topic: socket.topic, received: %{"$type" => "number"}},
-         sort: [number: -1],
-         projection: %{received: 1}
-       ) || %{})["received"] || 0
+  def received(socket) do
+    case newest(%{topic: socket.topic, received: %{"$type" => "number"}}, %{received: 1}) do
+      %{"received" => received} -> received
+      nil -> 0
+    end
+  end
 
-  def config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)
+  defp last(topic) do
+    case newest(%{topic: topic}, %{number: 1}) do
+      %{"number" => number} -> number
+      nil -> 0
+    end
+  end
+
+  defp newest(filter, projection),
+    do:
+      Mongo.find_one(config()[:name], config()[:messages], filter,
+        sort: [number: -1],
+        projection: projection
+      )
+
+  defp config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)
 end

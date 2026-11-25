@@ -90,6 +90,7 @@ defmodule PhoenixDurableChannel.Stream.Memory do
     {:noreply, state}
   end
 
+  @doc false
   def kept(topic) do
     case :ets.lookup(__MODULE__, topic) do
       [{^topic, kept}] ->
@@ -115,7 +116,7 @@ defmodule PhoenixDurableChannel.Stream.Memory do
   def count(socket, last, received),
     do: GenServer.call(__MODULE__, {:count, socket.topic, last, received})
 
-  def put(topic, kept),
+  defp put(topic, kept),
     do:
       :ets.insert(
         __MODULE__,

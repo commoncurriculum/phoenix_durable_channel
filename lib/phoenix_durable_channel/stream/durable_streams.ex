@@ -28,40 +28,45 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     else
       Process.monitor(channel)
 
+      watched =
+        case state.topics do
+          %{^topic => {:watched, count}} -> {:watched, count + 1}
+          _unwatched_or_forgetting -> {:watched, 1}
+        end
+
       {:noreply,
        %{
          state
          | channels: Map.put(state.channels, channel, topic),
-           topics:
-             Map.update(state.topics, topic, 1, fn
-               count when is_integer(count) -> count + 1
-               _forget -> 1
-             end)
+           topics: Map.put(state.topics, topic, watched)
        }}
     end
   end
 
   @impl GenServer
   def handle_info({:DOWN, _reference, :process, channel, _reason}, state) do
-    topic = Map.fetch!(state.channels, channel)
-    count = Map.fetch!(state.topics, topic) - 1
-    state = %{state | channels: Map.delete(state.channels, channel)}
+    {topic, channels} = Map.pop!(state.channels, channel)
+    state = %{state | channels: channels}
 
-    if count == 0 do
-      reference = make_ref()
-      Process.send_after(self(), {:forget, topic, reference}, state.keep_offsets_for)
-      {:noreply, %{state | topics: Map.put(state.topics, topic, reference)}}
-    else
-      {:noreply, %{state | topics: Map.put(state.topics, topic, count)}}
+    case Map.fetch!(state.topics, topic) do
+      {:watched, 1} ->
+        reference = make_ref()
+        Process.send_after(self(), {:forget, topic, reference}, state.keep_offsets_for)
+        {:noreply, %{state | topics: Map.put(state.topics, topic, {:forgetting, reference})}}
+
+      {:watched, count} ->
+        {:noreply, %{state | topics: Map.put(state.topics, topic, {:watched, count - 1})}}
     end
   end
 
   def handle_info({:forget, topic, reference}, state) do
-    if Map.get(state.topics, topic) == reference do
-      :ets.delete(@table, topic)
-      {:noreply, %{state | topics: Map.delete(state.topics, topic)}}
-    else
-      {:noreply, state}
+    case state.topics do
+      %{^topic => {:forgetting, ^reference}} ->
+        :ets.delete(@table, topic)
+        {:noreply, %{state | topics: Map.delete(state.topics, topic)}}
+
+      _watched_again ->
+        {:noreply, state}
     end
   end
 
@@ -98,7 +103,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     end
   end
 
-  def post(topic, number, event, payload, received) do
+  defp post(topic, number, event, payload, received) do
     response =
       Req.post!(url(topic),
         json: %{number: number, event: event, payload: payload, received: received},
@@ -108,21 +113,21 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
         ]
       )
 
-    cond do
-      response.status in 200..299 -> :posted
-      response.status == 409 -> :taken
-      true -> raise "Durable Streams refused an append to #{topic}: HTTP #{response.status}"
+    case response.status do
+      status when status in 200..299 -> :posted
+      409 -> :taken
+      status -> raise "Durable Streams refused an append to #{topic}: HTTP #{status}"
     end
   end
 
-  def kept(topic) do
+  defp kept(topic) do
     case :ets.lookup(@table, topic) do
       [{^topic, kept}] -> kept
       [] -> nil
     end
   end
 
-  def read(topic) do
+  defp read(topic) do
     known =
       case kept(topic) do
         nil ->
@@ -144,7 +149,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     kept
   end
 
-  def read_to_end(topic, kept) do
+  defp read_to_end(topic, kept) do
     response = get(topic, kept.offset)
 
     read =
@@ -167,7 +172,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
       else: read_to_end(topic, read)
   end
 
-  def get(topic, offset),
+  defp get(topic, offset),
     do:
       Req.get!(url(topic),
         params: [offset: offset],
@@ -197,6 +202,7 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     }
   end
 
+  @doc false
   def token(scope, topic, seconds \\ 86_400) do
     config = config()
     header = Base.url_encode64(Jason.encode!(%{alg: "HS256", typ: "JWT"}), padding: false)
@@ -219,8 +225,8 @@ defmodule PhoenixDurableChannel.Stream.DurableStreams do
     header <> "." <> claims <> "." <> signature
   end
 
-  def url(topic),
+  defp url(topic),
     do: config()[:url] <> "/v1/stream/#{config()[:project]}/#{URI.encode_www_form(topic)}"
 
-  def config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)
+  defp config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)
 end

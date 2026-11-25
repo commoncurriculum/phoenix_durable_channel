@@ -10,12 +10,7 @@ defmodule PhoenixDurableChannel.Stream.S2 do
       body: Jason.encode!(%{event: event, payload: payload, received: received})
     }
 
-    fence =
-      if Map.has_key?(socket.assigns, :phx_fence),
-        do: [fencing_token: socket.assigns.phx_fence],
-        else: []
-
-    case S2.append(config()[:name], socket.topic, [record], fence) do
+    case S2.append(config()[:name], socket.topic, [record], fence(socket)) do
       {:ok, %S2.V1.AppendAck{end: %S2.V1.StreamPosition{seq_num: number}}} ->
         number
 
@@ -23,6 +18,9 @@ defmodule PhoenixDurableChannel.Stream.S2 do
         raise "S2 refused an append to #{socket.topic}: #{inspect(error)}"
     end
   end
+
+  defp fence(%{assigns: %{phx_fence: fence}}), do: [fencing_token: fence]
+  defp fence(_socket), do: []
 
   @impl PhoenixDurableChannel.Stream
   def count(socket, last, received) do
@@ -32,7 +30,8 @@ defmodule PhoenixDurableChannel.Stream.S2 do
         body: socket.assigns.phx_fence
       },
       %S2.V1.AppendRecord{
-        body: Jason.encode!(%{event: "phx_reply", payload: %{received: received}, received: received})
+        body:
+          Jason.encode!(%{event: "phx_reply", payload: %{received: received}, received: received})
       }
     ]
 
@@ -45,43 +44,38 @@ defmodule PhoenixDurableChannel.Stream.S2 do
 
   @impl PhoenixDurableChannel.Stream
   def reader(socket) do
-    token =
-      if config()[:account_endpoint] do
-        client =
-          S2.Client.new(
-            S2.Config.new(base_url: config()[:account_endpoint], token: config()[:token])
-          )
-
-        info = %S2.AccessTokenInfo{
-          id:
-            "#{socket.topic}/#{System.unique_integer([:positive])}-#{System.system_time(:millisecond)}",
-          expires_at: DateTime.add(DateTime.utc_now(), 1, :day),
-          scope: %S2.AccessTokenScope{
-            basins: %{exact: config()[:basin]},
-            streams: %{exact: socket.topic},
-            ops: ["read"]
-          }
-        }
-
-        case S2.AccessTokens.issue_access_token(info, server: client) do
-          {:ok, %S2.IssueAccessTokenResponse{access_token: token}} ->
-            token
-
-          {:error, error} ->
-            raise "S2 refused a read token for #{socket.topic}: #{inspect(error)}"
-        end
-      end
-
     %{
       type: "s2",
       endpoint: config()[:basin_endpoint],
       basin: config()[:basin],
       stream: socket.topic,
-      token: token,
+      token: read_token(config()[:account_endpoint], socket.topic),
       last: last(socket.topic)
     }
   end
 
+  defp read_token(nil, _stream), do: nil
+
+  defp read_token(account_endpoint, stream) do
+    client = S2.Client.new(S2.Config.new(base_url: account_endpoint, token: config()[:token]))
+
+    info = %S2.AccessTokenInfo{
+      id: "#{stream}/#{System.unique_integer([:positive])}-#{System.system_time(:millisecond)}",
+      expires_at: DateTime.add(DateTime.utc_now(), 1, :day),
+      scope: %S2.AccessTokenScope{
+        basins: %{exact: config()[:basin]},
+        streams: %{exact: stream},
+        ops: ["read"]
+      }
+    }
+
+    case S2.AccessTokens.issue_access_token(info, server: client) do
+      {:ok, %S2.IssueAccessTokenResponse{access_token: token}} -> token
+      {:error, error} -> raise "S2 refused a read token for #{stream}: #{inspect(error)}"
+    end
+  end
+
+  @doc false
   def last(stream) do
     case S2.check_tail(config()[:name], stream) do
       {:ok, %S2.V1.StreamPosition{seq_num: last}} -> last
@@ -92,9 +86,9 @@ defmodule PhoenixDurableChannel.Stream.S2 do
   @impl PhoenixDurableChannel.Stream
   def received(socket), do: received(socket.topic, last(socket.topic), @first_page)
 
-  def received(_stream, 0, _page), do: 0
+  defp received(_stream, 0, _page), do: 0
 
-  def received(stream, before, page) do
+  defp received(stream, before, page) do
     start = max(before - page, 0)
 
     counts =
@@ -107,12 +101,13 @@ defmodule PhoenixDurableChannel.Stream.S2 do
         end
       end)
 
-    if counts == [],
-      do: received(stream, start, min(page * 2, @largest_page)),
-      else: List.last(counts)
+    case List.last(counts) do
+      nil -> received(stream, start, min(page * 2, @largest_page))
+      received -> received
+    end
   end
 
-  def records(stream, from, before) do
+  defp records(stream, from, before) do
     case S2.read(config()[:name], stream, seq_num: from, count: before - from, clamp: true) do
       {:ok, %S2.V1.ReadBatch{records: []}} ->
         []
@@ -127,5 +122,6 @@ defmodule PhoenixDurableChannel.Stream.S2 do
     end
   end
 
+  @doc false
   def config, do: Application.fetch_env!(:phoenix_durable_channel, __MODULE__)
 end
